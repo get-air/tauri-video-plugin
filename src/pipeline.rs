@@ -912,12 +912,10 @@ fn attach_subtitle_branch(
 pub(crate) fn configure_source(element: &gst::Element, source: &VideoSource) {
     use gst::prelude::*;
 
-    if element.find_property("user-agent").is_some() {
-        let user_agent = source.user_agent.as_deref().unwrap_or(
-            "Mozilla/5.0 (Linux; Android TV) AppleWebKit/537.36 \
-             (KHTML, like Gecko) Chrome/138.0 Safari/537.36",
-        );
-        element.set_property("user-agent", user_agent);
+    if let Some(user_agent) = source.user_agent.as_deref() {
+        if element.find_property("user-agent").is_some() {
+            element.set_property("user-agent", user_agent);
+        }
     }
     if element.find_property("timeout").is_some() {
         element.set_property("timeout", 60u32);

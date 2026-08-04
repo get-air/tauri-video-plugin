@@ -1,12 +1,14 @@
-# Signal Bench example
+# Native stream lab
 
-Reference Tauri application for `tauri-plugin-video`. It demonstrates a CSS-sized `HTMLVideoElement`, DOM overlays, custom controls, live telemetry, seeking, and track selection.
+The React + TypeScript reference app for `tauri-plugin-video`.
+
+It combines the headless plugin API with [Media Chrome](https://github.com/muxinc/media-chrome), native audio/subtitle selectors, fit and zoom controls, live FPS/buffer telemetry, and a real HTML image overlay. The source library includes MP4, WebM, Ogg, and a 1.1 GB MKV that streams over HTTPS ranges.
 
 ```sh
 npm install
 npm run tauri dev
 ```
 
-The default URL is the public Big Buck Bunny Matroska sample. Paste any reachable HTTP(S) MKV URL into the source field. For local file testing, pass a `file://` URL from a location allowed by the application.
+Paste any reachable HTTP(S) video URL into the source field or choose a free Sintel sample. Append `?tv=1` (or set `VITE_VIDEO_TV=1`) to use the Android TV player with spatial navigation.
 
-Android project files are generated under `src-tauri/gen/android`. Install the official GStreamer Android SDK and follow the repository's `docs/android.md` before running an Android build.
+Android project files are generated under `src-tauri/gen/android`. Install the GStreamer Android SDK and follow [`../../docs/android.md`](../../docs/android.md) before building the compatibility backend.

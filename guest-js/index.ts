@@ -801,6 +801,9 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   #resize?: ResizeObserver
   #polling = false
   #destroyed = false
+  #volume = 1
+  #muted = false
+  #mediaFacadeProperties = new Map<PropertyKey, PropertyDescriptor | undefined>()
 
   constructor(element: HTMLVideoElement, options: AttachVideoOptions) {
     super()
@@ -839,6 +842,15 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
       },
     })
     this.#updateMedia(this.#snapshot)
+    this.#installMediaFacade()
+    this.element.dispatchEvent(new Event('loadedmetadata'))
+    this.element.dispatchEvent(new Event('durationchange'))
+    this.element.dispatchEvent(new Event('progress'))
+    this.element.dispatchEvent(new Event('canplay'))
+    if (this.#snapshot.playing) {
+      this.element.dispatchEvent(new Event('play'))
+      this.element.dispatchEvent(new Event('playing'))
+    }
     this.#resize = new ResizeObserver(() => void this.#syncLayout())
     this.#resize.observe(this.element)
     this.#timer = window.setInterval(() => void this.#poll(), 250)
@@ -847,26 +859,36 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
 
   async play(): Promise<void> {
     this.#snapshot = await this.#control('play')
+    this.element.dispatchEvent(new Event('play'))
+    this.element.dispatchEvent(new Event('playing'))
   }
 
   pause(): void {
-    void this.#control('pause')
+    void this.#control('pause').then((snapshot) => {
+      this.#snapshot = snapshot
+      this.element.dispatchEvent(new Event('pause'))
+    })
   }
 
   async setVolume(volume: number): Promise<void> {
     const clamped = Math.min(1, Math.max(0, volume))
-    this.element.volume = clamped
-    this.#snapshot = await this.#control('volume', clamped)
+    this.#volume = clamped
+    this.#snapshot = await this.#control('volume', this.#muted ? 0 : clamped)
+    this.element.dispatchEvent(new Event('volumechange'))
   }
 
   async seek(positionSeconds: number): Promise<void> {
     if (!Number.isFinite(positionSeconds) || positionSeconds < 0) {
       throw new RangeError('positionSeconds must be a finite, non-negative number')
     }
+    this.element.dispatchEvent(new Event('seeking'))
     this.#snapshot = await this.#control('seek', positionSeconds)
+    this.#updateMedia(this.#snapshot)
     this.dispatchEvent(new CustomEvent('timeupdate', {
       detail: { currentTime: positionSeconds },
     }))
+    this.element.dispatchEvent(new Event('timeupdate'))
+    this.element.dispatchEvent(new Event('seeked'))
   }
 
   async selectTrack(kind: TrackKind, trackId?: string): Promise<void> {
@@ -942,6 +964,7 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     if (this.#timer !== undefined) clearInterval(this.#timer)
     this.#resize?.disconnect()
     await invoke(`${COMMAND}native_close`).catch(() => undefined)
+    this.#removeMediaFacade()
     this.element.style.removeProperty('visibility')
     document.documentElement.classList.remove('tauri-native-video')
   }
@@ -966,8 +989,16 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
       this.dispatchEvent(new CustomEvent('bufferprogress', {
         detail: { bufferedAhead: this.bufferedAhead() },
       }))
+      this.element.dispatchEvent(new Event('timeupdate'))
+      if (previous?.bufferedSeconds !== snapshot.bufferedSeconds) {
+        this.element.dispatchEvent(new Event('progress'))
+      }
+      if (previous?.durationSeconds !== snapshot.durationSeconds) {
+        this.element.dispatchEvent(new Event('durationchange'))
+      }
       if (previous?.playing !== snapshot.playing) {
         this.element.dispatchEvent(new Event(snapshot.playing ? 'play' : 'pause'))
+        if (snapshot.playing) this.element.dispatchEvent(new Event('playing'))
       }
     } catch (error) {
       if (!this.#destroyed) this.dispatchEvent(new CustomEvent('error', { detail: normalizeError(error) }))
@@ -999,6 +1030,68 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
       })),
     }
     Object.assign(this.#media, nextMedia)
+  }
+
+  #installMediaFacade(): void {
+    const source = typeof this.#options.source === 'string'
+      ? this.#options.source
+      : this.#options.source.uri
+    const define = (key: PropertyKey, descriptor: PropertyDescriptor) => {
+      this.#mediaFacadeProperties.set(key, Object.getOwnPropertyDescriptor(this.element, key))
+      Object.defineProperty(this.element, key, { configurable: true, ...descriptor })
+    }
+    const ranges = (end: number): TimeRanges => ({
+      length: end > 0 ? 1 : 0,
+      start: (index: number) => {
+        if (index !== 0 || end <= 0) throw new DOMException('Index out of bounds', 'IndexSizeError')
+        return 0
+      },
+      end: (index: number) => {
+        if (index !== 0 || end <= 0) throw new DOMException('Index out of bounds', 'IndexSizeError')
+        return end
+      },
+    })
+
+    define('play', { value: () => this.play() })
+    define('pause', { value: () => this.pause() })
+    define('currentTime', {
+      get: () => this.#snapshot?.currentTimeSeconds ?? 0,
+      set: (value: number) => { void this.seek(Number(value)) },
+    })
+    define('duration', { get: () => this.#snapshot?.durationSeconds ?? Number.NaN })
+    define('paused', { get: () => !(this.#snapshot?.playing ?? false) })
+    define('ended', {
+      get: () => Boolean(this.#snapshot
+        && this.#snapshot.durationSeconds > 0
+        && this.#snapshot.currentTimeSeconds >= this.#snapshot.durationSeconds),
+    })
+    define('volume', {
+      get: () => this.#volume,
+      set: (value: number) => { void this.setVolume(Number(value)) },
+    })
+    define('muted', {
+      get: () => this.#muted,
+      set: (value: boolean) => {
+        this.#muted = Boolean(value)
+        void this.#control('volume', this.#muted ? 0 : this.#volume)
+        this.element.dispatchEvent(new Event('volumechange'))
+      },
+    })
+    define('buffered', { get: () => ranges(this.#snapshot?.bufferedSeconds ?? 0) })
+    define('seekable', { get: () => ranges(this.#snapshot?.durationSeconds ?? 0) })
+    define('readyState', { get: () => this.#snapshot ? HTMLMediaElement.HAVE_ENOUGH_DATA : HTMLMediaElement.HAVE_NOTHING })
+    define('networkState', { get: () => this.#snapshot ? HTMLMediaElement.NETWORK_IDLE : HTMLMediaElement.NETWORK_LOADING })
+    define('currentSrc', { get: () => source })
+    define('videoWidth', { get: () => this.#snapshot?.videoWidth ?? 0 })
+    define('videoHeight', { get: () => this.#snapshot?.videoHeight ?? 0 })
+  }
+
+  #removeMediaFacade(): void {
+    for (const [key, descriptor] of this.#mediaFacadeProperties) {
+      if (descriptor) Object.defineProperty(this.element, key, descriptor)
+      else delete (this.element as unknown as Record<PropertyKey, unknown>)[key]
+    }
+    this.#mediaFacadeProperties.clear()
   }
 
   #layout(): { x: number; y: number; width: number; height: number } {

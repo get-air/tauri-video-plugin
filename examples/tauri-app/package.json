@@ -10,17 +10,18 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0",
     "@noriginmedia/norigin-spatial-navigation": "^3.3.0",
+    "@tauri-apps/api": "^2.0.0",
+    "media-chrome": "^4.19.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tauri-plugin-video-api": "file:../../"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.2.0",
-    "vite": "^7.0.0",
-    "@tauri-apps/cli": "^2.0.0"
+    "vite": "^7.0.0"
   }
 }
