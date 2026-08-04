@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="46" viewBox="0 0 160 46">
+  <rect x="1" y="1" width="158" height="44" rx="3" fill="#071014" fill-opacity=".78" stroke="#63f0e8" stroke-width="1"/>
+  <path d="M16 13h10l6 10-6 10H16l6-10z" fill="none" stroke="#63f0e8"/>
+  <circle cx="24" cy="23" r="3" fill="#f6a84f"/>
+  <text x="42" y="20" fill="#63f0e8" font-family="monospace" font-size="8" letter-spacing="1.4">HTML OVERLAY</text>
+  <text x="42" y="32" fill="#cbd8da" font-family="monospace" font-size="7" letter-spacing="1">ABOVE VIDEO</text>
+</svg>

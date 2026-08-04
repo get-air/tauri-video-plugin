@@ -1,0 +1,17 @@
+[default]
+description = "Create and control bounded video sessions, inspect tracks, seek, and read sanitized playback statistics"
+permissions = [
+  "allow-runtime-capabilities",
+  "allow-create-session",
+  "allow-set-playback-state",
+  "allow-seek",
+  "allow-select-track",
+  "allow-update-visibility",
+  "allow-session-stats",
+  "allow-destroy-session",
+  "allow-native-open",
+  "allow-native-control",
+  "allow-native-layout",
+  "allow-native-stats",
+  "allow-native-close",
+]

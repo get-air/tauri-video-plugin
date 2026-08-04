@@ -1,0 +1,16 @@
+/target/
+/node_modules/
+/dist-js/
+/.codebase-memory/
+/.impeccable/
+/examples/tauri-app/node_modules/
+/examples/tauri-app/dist/
+/examples/tauri-app/src-tauri/target/
+/android/src/main/jniLibs/**/*.so
+/android/.tauri/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
+*.tgz

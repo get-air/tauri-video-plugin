@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "es2021",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noImplicitAny": true,
+    "noEmit": true
+  },
+  "include": ["guest-js/index.ts", "react/**/*.tsx"],
+  "exclude": ["dist-js", "node_modules", "guest-js/*.test.ts"]
+}

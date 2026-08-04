@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-update-visibility"
+description = "Enables the update_visibility command without any pre-configured scope."
+commands.allow = ["update_visibility"]
+
+[[permission]]
+identifier = "deny-update-visibility"
+description = "Denies the update_visibility command without any pre-configured scope."
+commands.deny = ["update_visibility"]
