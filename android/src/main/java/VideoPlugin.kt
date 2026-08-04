@@ -55,7 +55,6 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 import okhttp3.OkHttpClient
-import org.freedesktop.gstreamer.GStreamer
 
 /** Android/TV integration with a direct SurfaceView playback plane. */
 @TauriPlugin
@@ -71,16 +70,17 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
     private var lastRenderedFrames = 0L
     private var lastFrameSampleNs = 0L
     private var measuredFps = 0.0
-    private val bundledCaFile: File
+    private val bundledCaFile: File?
     private var nativeContainer = "unknown"
 
     init {
-        bundledCaFile = File(activity.filesDir, "tauri-video-ca-certificates.crt")
-        activity.assets.open("tauri-video-ca-certificates.crt").use { input ->
-            bundledCaFile.outputStream().use(input::copyTo)
-        }
-        GStreamerBootstrap.setTlsCaFile(bundledCaFile.absolutePath)
-        GStreamer.init(activity.applicationContext)
+        bundledCaFile = runCatching {
+            File(activity.filesDir, "tauri-video-ca-certificates.crt").also { destination ->
+                activity.assets.open("tauri-video-ca-certificates.crt").use { input ->
+                    destination.outputStream().use(input::copyTo)
+                }
+            }
+        }.getOrNull()
     }
 
     override fun load(webView: WebView) {
@@ -380,14 +380,16 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         val caFile = when (val requested = args.tlsCaFile?.trim()) {
             null, "" -> null
             "bundled" -> bundledCaFile
+                ?: throw IllegalArgumentException("Bundled TLS CA file is unavailable to the Android app")
             else -> File(requested).takeIf { it.isFile }
                 ?: throw IllegalArgumentException("TLS CA file is unavailable to the Android app")
         }
         if (caFile == null) {
-            return DefaultHttpDataSource.Factory()
+            val factory = DefaultHttpDataSource.Factory()
                 .setAllowCrossProtocolRedirects(true)
-                .setUserAgent(args.userAgent ?: DEFAULT_USER_AGENT)
                 .setDefaultRequestProperties(requestHeaders)
+            args.userAgent?.takeIf(String::isNotBlank)?.let(factory::setUserAgent)
+            return factory
         }
 
         val certificateFactory = CertificateFactory.getInstance("X.509")
@@ -419,9 +421,10 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             .followSslRedirects(true)
             .retryOnConnectionFailure(true)
             .build()
-        return OkHttpDataSource.Factory(client)
-            .setUserAgent(args.userAgent ?: DEFAULT_USER_AGENT)
+        val factory = OkHttpDataSource.Factory(client)
             .setDefaultRequestProperties(requestHeaders)
+        args.userAgent?.takeIf(String::isNotBlank)?.let(factory::setUserAgent)
+        return factory
     }
 
     private fun applyNativeLayout(x: Double, y: Double, width: Double, height: Double) {
@@ -429,8 +432,8 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         val params = (view.layoutParams as? FrameLayout.LayoutParams) ?: FrameLayout.LayoutParams(1, 1)
         params.width = width.toInt().coerceAtLeast(1)
         params.height = height.toInt().coerceAtLeast(1)
-        params.leftMargin = x.toInt().coerceAtLeast(0)
-        params.topMargin = y.toInt().coerceAtLeast(0)
+        params.leftMargin = x.toInt()
+        params.topMargin = y.toInt()
         view.layoutParams = params
     }
 
@@ -547,8 +550,6 @@ private fun containerFromUri(value: String): String {
     var action: String = ""; var value: Double = 0.0; var index: Int = -1
 }
 
-private const val DEFAULT_USER_AGENT =
-    "Mozilla/5.0 (Linux; Android TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0 Safari/537.36"
 private val PEM_CERTIFICATE = Regex(
     "-----BEGIN CERTIFICATE-----[\\s\\S]+?-----END CERTIFICATE-----"
 )

@@ -51,6 +51,7 @@ export function NativeMediaPlayer({
   onError,
 }: NativeMediaPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const playerRef = useRef<HTMLDivElement>(null)
   const controllerRef = useRef<VideoController | null>(null)
   const [telemetry, setTelemetry] = useState<PlayerTelemetry>({
     currentTime: 0,
@@ -64,7 +65,42 @@ export function NativeMediaPlayer({
   const [error, setError] = useState('')
   const [fit, setFit] = useState<VideoFitMode>('fit')
   const [zoom, setZoom] = useState(1)
+  const [fullscreen, setFullscreen] = useState(false)
   const sourceKey = typeof source === 'string' ? source : source.uri
+
+  useEffect(() => {
+    const player = playerRef.current
+    if (!player) return
+    const enter = (event: Event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      setFullscreen(true)
+    }
+    const exit = (event: Event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      setFullscreen(false)
+    }
+    player.addEventListener('mediaenterfullscreenrequest', enter, true)
+    player.addEventListener('mediaexitfullscreenrequest', exit, true)
+    return () => {
+      player.removeEventListener('mediaenterfullscreenrequest', enter, true)
+      player.removeEventListener('mediaexitfullscreenrequest', exit, true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!fullscreen) return
+    document.documentElement.classList.add('native-css-fullscreen')
+    const exitOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setFullscreen(false)
+    }
+    window.addEventListener('keydown', exitOnEscape)
+    return () => {
+      document.documentElement.classList.remove('native-css-fullscreen')
+      window.removeEventListener('keydown', exitOnEscape)
+    }
+  }, [fullscreen])
 
   useEffect(() => {
     const element = videoRef.current
@@ -185,7 +221,7 @@ export function NativeMediaPlayer({
   const selectedSubtitle = subtitleTracks.find((track) => track.selected)?.id ?? ''
 
   return (
-    <div className="native-player" data-loading={loading}>
+    <div ref={playerRef} className="native-player" data-loading={loading} data-fullscreen={fullscreen || undefined}>
       <MediaController
         className="media-controller"
         aria-label={title}
@@ -205,7 +241,7 @@ export function NativeMediaPlayer({
           <MediaVolumeRange />
           <MediaTimeDisplay showDuration />
           <MediaTimeRange />
-          <MediaFullscreenButton />
+          <MediaFullscreenButton mediaIsFullscreen={fullscreen} />
         </MediaControlBar>
       </MediaController>
 

@@ -7,14 +7,19 @@ val tauriVideoCaAssets = layout.buildDirectory.dir("generated/tauriVideoCaAssets
 val stageTauriVideoCaBundle by tasks.registering(Copy::class) {
     val gstreamerRoot = providers.environmentVariable("GSTREAMER_ROOT_ANDROID")
     val extraCa = providers.environmentVariable("TAURI_VIDEO_EXTRA_CA")
-    from(gstreamerRoot.map { "$it/arm64/etc/ssl/certs/ca-certificates.crt" })
+    val bundledCa = gstreamerRoot
+        .map { "$it/arm64/etc/ssl/certs/ca-certificates.crt" }
+        .orElse(layout.projectDirectory.file("src/main/assets/tauri-video-ca-certificates.crt").asFile.absolutePath)
+    from(bundledCa)
     into(tauriVideoCaAssets)
     rename { "tauri-video-ca-certificates.crt" }
     inputs.property("tauriVideoExtraCa", extraCa.orElse(""))
     doLast {
         extraCa.orNull?.takeIf(String::isNotBlank)?.let { path ->
             val destination = tauriVideoCaAssets.get().file("tauri-video-ca-certificates.crt").asFile
-            destination.appendText("\n${file(path).readText()}\n")
+            destination.parentFile.mkdirs()
+            if (destination.isFile) destination.appendText("\n${file(path).readText()}\n")
+            else destination.writeText(file(path).readText())
         }
     }
 }

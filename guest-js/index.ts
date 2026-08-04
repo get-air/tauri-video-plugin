@@ -799,6 +799,10 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   #media: MediaInfo = { seekable: true, live: false, tracks: [], chapters: [] }
   #timer?: number
   #resize?: ResizeObserver
+  #layoutFrame?: number
+  #layoutInFlight = false
+  #layoutDirty = false
+  #lastLayout?: { x: number; y: number; width: number; height: number }
   #polling = false
   #destroyed = false
   #volume = 1
@@ -833,6 +837,7 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
       ? { uri: this.#options.source }
       : this.#options.source
     const layout = this.#layout()
+    this.#lastLayout = layout
     this.#snapshot = await invoke<NativePlaybackSnapshot>(`${COMMAND}native_open`, {
       payload: {
         ...source,
@@ -851,8 +856,13 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
       this.element.dispatchEvent(new Event('play'))
       this.element.dispatchEvent(new Event('playing'))
     }
-    this.#resize = new ResizeObserver(() => void this.#syncLayout())
+    this.#resize = new ResizeObserver(() => this.#requestLayout())
     this.#resize.observe(this.element)
+    window.addEventListener('scroll', this.#handleViewportChange, { capture: true, passive: true })
+    window.addEventListener('resize', this.#handleViewportChange, { passive: true })
+    window.visualViewport?.addEventListener('scroll', this.#handleViewportChange, { passive: true })
+    window.visualViewport?.addEventListener('resize', this.#handleViewportChange, { passive: true })
+    this.#requestLayout()
     this.#timer = window.setInterval(() => void this.#poll(), 250)
     this.#options.signal?.addEventListener('abort', () => void this.destroy(), { once: true })
   }
@@ -962,7 +972,12 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     if (this.#destroyed) return
     this.#destroyed = true
     if (this.#timer !== undefined) clearInterval(this.#timer)
+    if (this.#layoutFrame !== undefined) cancelAnimationFrame(this.#layoutFrame)
     this.#resize?.disconnect()
+    window.removeEventListener('scroll', this.#handleViewportChange, true)
+    window.removeEventListener('resize', this.#handleViewportChange)
+    window.visualViewport?.removeEventListener('scroll', this.#handleViewportChange)
+    window.visualViewport?.removeEventListener('resize', this.#handleViewportChange)
     await invoke(`${COMMAND}native_close`).catch(() => undefined)
     this.#removeMediaFacade()
     this.element.style.removeProperty('visibility')
@@ -1107,9 +1122,50 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     }
   }
 
-  async #syncLayout(): Promise<void> {
+  #handleViewportChange = (): void => {
+    this.#requestLayout()
+  }
+
+  #requestLayout(): void {
     if (this.#destroyed) return
-    await invoke(`${COMMAND}native_layout`, { payload: this.#layout() })
+    this.#layoutDirty = true
+    if (this.#layoutFrame !== undefined || this.#layoutInFlight) return
+    this.#layoutFrame = requestAnimationFrame(() => {
+      this.#layoutFrame = undefined
+      void this.#flushLayout()
+    })
+  }
+
+  async #flushLayout(): Promise<void> {
+    if (this.#destroyed || this.#layoutInFlight) return
+    this.#layoutInFlight = true
+    try {
+      while (!this.#destroyed && this.#layoutDirty) {
+        this.#layoutDirty = false
+        const layout = this.#layout()
+        if (this.#sameLayout(layout, this.#lastLayout)) continue
+        await invoke(`${COMMAND}native_layout`, { payload: layout })
+        this.#lastLayout = layout
+      }
+    } catch (error) {
+      if (!this.#destroyed) {
+        this.dispatchEvent(new CustomEvent('error', { detail: normalizeError(error) }))
+      }
+    } finally {
+      this.#layoutInFlight = false
+      if (this.#layoutDirty && !this.#destroyed) this.#requestLayout()
+    }
+  }
+
+  #sameLayout(
+    left: { x: number; y: number; width: number; height: number },
+    right?: { x: number; y: number; width: number; height: number },
+  ): boolean {
+    if (!right) return false
+    return Math.abs(left.x - right.x) < 0.5
+      && Math.abs(left.y - right.y) < 0.5
+      && Math.abs(left.width - right.width) < 0.5
+      && Math.abs(left.height - right.height) < 0.5
   }
 }
 

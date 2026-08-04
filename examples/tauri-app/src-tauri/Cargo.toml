@@ -19,4 +19,9 @@ tauri-build = { version = "2.5.6", default-features = false , features = [] }
 
 [dependencies]
 tauri = { version = "2.10.3", features = [] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
 tauri-plugin-video = { path = "../../../" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-video = { path = "../../../", default-features = false }
