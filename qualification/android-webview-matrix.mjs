@@ -27,6 +27,15 @@ const allCases = [
   ['av1-opus-320', 'av1-opus-320.mkv'],
   ['h264-flac', 'h264-flac.mkv'],
   ['multitrack-subtitles', 'h264-multitrack-subtitles.mkv'],
+  ['hevc-main10-eac3', 'hevc-main10-eac3.mkv'],
+  ['hevc-main10-eac3-30', 'hevc-main10-eac3-30.mkv'],
+  ['hevc-main10-truehd', 'hevc-main10-truehd.mkv'],
+  ['h264-dts', 'h264-dts.mkv'],
+  ['h264-opus', 'h264-opus.mkv'],
+  ['mpeg2-ac3-ts', 'mpeg2-ac3.ts'],
+  ['prores-pcm', 'prores-pcm.mov'],
+  ['ffv1-flac', 'ffv1-flac.mkv'],
+  ['mjpeg-pcm', 'mjpeg-pcm.avi'],
 ]
 const requestedCases = new Set((options.cases ?? '').split(',').filter(Boolean))
 const cases = requestedCases.size
@@ -57,7 +66,10 @@ function evaluate(expression) {
   return new Promise((resolve, reject) => {
     const id = ++nextId
     pending.set(id, (message) => {
-      if (message.result.exceptionDetails) reject(new Error(message.result.exceptionDetails.text))
+      if (message.result.exceptionDetails) {
+        const details = message.result.exceptionDetails
+        reject(new Error(details.exception?.description ?? details.text ?? JSON.stringify(details)))
+      }
       else resolve(message.result.result.value)
     })
     socket.send(JSON.stringify({
@@ -108,7 +120,9 @@ for (const [name, filename] of cases) {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     setter.call(input, ${JSON.stringify(url)});
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    document.querySelector('.load-button').click();
+    const button = document.querySelector('.source-form button[type="submit"]');
+    if (!button) return false;
+    button.click();
     return true;
   })()`)
 
@@ -120,12 +134,13 @@ for (const [name, filename] of cases) {
     if (sample.error || (sample.currentTime >= 1 && !sample.paused)) break
   }
 
-  let passed = Boolean(sample && !sample.error && sample.currentTime >= 1 && !sample.paused)
+  let passed = Boolean(sample && !sample.error && sample.currentTime >= 1
+    && !sample.paused && sample.totalVideoFrames > 0)
   if (passed) {
     execFileSync(adb, ['-s', serial, 'shell', 'dumpsys', 'gfxinfo', 'io.github.taurivideo.signalbench', 'reset'])
     await delay(4_000)
     sample = await evaluate(browserSample)
-    passed = Boolean(!sample.error && sample.currentTime >= 1)
+    passed = Boolean(!sample.error && sample.currentTime >= 1 && sample.totalVideoFrames > 0)
   }
 
   const screenshot = execFileSync(adb, ['-s', serial, 'exec-out', 'screencap', '-p'])

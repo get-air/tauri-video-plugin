@@ -4,6 +4,7 @@ use tauri::{plugin::PluginApi, AppHandle, Runtime};
 
 use crate::models::{
     NativeControlRequest, NativeLayoutRequest, NativeOpenRequest, NativePlaybackSnapshot,
+    NativeSessionRequest,
 };
 
 pub fn init<R: Runtime, C: DeserializeOwned>(
@@ -37,13 +38,16 @@ impl<R: Runtime> DesktopVideo<R> {
     }
 
     #[cfg(target_os = "linux")]
-    pub fn stats_native(&self) -> crate::Result<NativePlaybackSnapshot> {
-        self.run_on_main(move |_| linux::stats())
+    pub fn stats_native(
+        &self,
+        payload: NativeSessionRequest,
+    ) -> crate::Result<NativePlaybackSnapshot> {
+        self.run_on_main(move |_| linux::stats(payload))
     }
 
     #[cfg(target_os = "linux")]
-    pub fn close_native(&self) -> crate::Result<()> {
-        self.run_on_main(move |_| linux::close())
+    pub fn close_native(&self, payload: NativeSessionRequest) -> crate::Result<()> {
+        self.run_on_main(move |_| linux::close(payload))
     }
 
     #[cfg(target_os = "linux")]
@@ -89,12 +93,12 @@ impl<R: Runtime> DesktopVideo<R> {
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub fn stats_native(&self) -> crate::Result<NativePlaybackSnapshot> {
+    pub fn stats_native(&self, _: NativeSessionRequest) -> crate::Result<NativePlaybackSnapshot> {
         self.unsupported()
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub fn close_native(&self) -> crate::Result<()> {
+    pub fn close_native(&self, _: NativeSessionRequest) -> crate::Result<()> {
         self.unsupported()
     }
 }
@@ -113,7 +117,7 @@ mod linux {
     use crate::{
         models::{
             NativeControlRequest, NativeLayoutRequest, NativeOpenRequest, NativePlaybackSnapshot,
-            NativeTrackInfo, TrackKind, VideoSource,
+            NativeSessionRequest, NativeTrackInfo, TrackKind, VideoSource,
         },
         pipeline::configure_source,
         Error, Result,
@@ -129,6 +133,7 @@ mod linux {
     }
 
     struct NativePlayer {
+        session_key: String,
         pipeline: gst::Element,
         gtk_sink: gst::Element,
         widget: gtk::Widget,
@@ -145,7 +150,8 @@ mod linux {
         app: &AppHandle<R>,
         payload: NativeOpenRequest,
     ) -> Result<NativePlaybackSnapshot> {
-        close()?;
+        close_unchecked()?;
+        let session_key = payload.session_key.clone();
         crate::runtime::initialize()?;
         ensure_host(app)?;
 
@@ -203,6 +209,7 @@ mod linux {
             .map_err(|error| Error::Pipeline(error.to_string()))?;
 
         let player = NativePlayer {
+            session_key: session_key.clone(),
             pipeline,
             gtk_sink,
             widget,
@@ -215,7 +222,7 @@ mod linux {
             selected_streams: BTreeSet::new(),
         };
         PLAYER.with(|slot| *slot.borrow_mut() = Some(player));
-        stats()
+        stats(NativeSessionRequest { session_key })
     }
 
     pub fn control(payload: NativeControlRequest) -> Result<NativePlaybackSnapshot> {
@@ -224,6 +231,7 @@ mod linux {
             let player = slot
                 .as_mut()
                 .ok_or_else(|| Error::InvalidRequest("native player is not open".into()))?;
+            ensure_session(&player.session_key, &payload.session_key)?;
             match payload.action.as_str() {
                 "play" => {
                     player
@@ -275,6 +283,7 @@ mod linux {
             let player = slot
                 .as_ref()
                 .ok_or_else(|| Error::InvalidRequest("native player is not open".into()))?;
+            ensure_session(&player.session_key, &payload.session_key)?;
             place_widget(
                 &player.widget,
                 payload.x,
@@ -285,17 +294,30 @@ mod linux {
         })
     }
 
-    pub fn stats() -> Result<NativePlaybackSnapshot> {
+    pub fn stats(payload: NativeSessionRequest) -> Result<NativePlaybackSnapshot> {
         PLAYER.with(|slot| {
             let mut slot = slot.borrow_mut();
             let player = slot
                 .as_mut()
                 .ok_or_else(|| Error::InvalidRequest("native player is not open".into()))?;
+            ensure_session(&player.session_key, &payload.session_key)?;
             snapshot(player)
         })
     }
 
-    pub fn close() -> Result<()> {
+    pub fn close(payload: NativeSessionRequest) -> Result<()> {
+        let owns_player = PLAYER.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .is_some_and(|player| player.session_key == payload.session_key)
+        });
+        if !owns_player {
+            return Ok(());
+        }
+        close_unchecked()
+    }
+
+    fn close_unchecked() -> Result<()> {
         let player = PLAYER.with(|slot| slot.borrow_mut().take());
         if let Some(player) = player {
             let _ = player.pipeline.set_state(gst::State::Null);
@@ -306,6 +328,16 @@ mod linux {
             });
         }
         Ok(())
+    }
+
+    fn ensure_session(active: &str, requested: &str) -> Result<()> {
+        if active == requested {
+            Ok(())
+        } else {
+            Err(Error::InvalidRequest(
+                "native player session is stale".into(),
+            ))
+        }
     }
 
     fn ensure_host<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
@@ -556,6 +588,7 @@ mod linux {
     use crate::{
         models::{
             NativeControlRequest, NativeLayoutRequest, NativeOpenRequest, NativePlaybackSnapshot,
+            NativeSessionRequest,
         },
         Error, Result,
     };
@@ -577,10 +610,10 @@ mod linux {
     pub fn layout(_: NativeLayoutRequest) -> Result<()> {
         unavailable()
     }
-    pub fn stats() -> Result<NativePlaybackSnapshot> {
+    pub fn stats(_: NativeSessionRequest) -> Result<NativePlaybackSnapshot> {
         unavailable()
     }
-    pub fn close() -> Result<()> {
+    pub fn close(_: NativeSessionRequest) -> Result<()> {
         Ok(())
     }
 }

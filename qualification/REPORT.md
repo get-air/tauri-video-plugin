@@ -4,132 +4,103 @@ Run date: 2026-08-04
 
 ## Current result
 
-Linux native playback and the Android Media3 path are functional. Android phone and TV x86_64 emulators progressively played HTTPS MKV, WebM, AVI, and MPEG-TS with HTML/SVG overlays above a native `SurfaceView`. The post-control-fix phone and low-memory TV matrices each passed all 11 selected cases with zero decoder-reported dropped frames.
+Android now uses two direct native rendering paths: Media3/MediaCodec for formats the platform decoder can handle and LibVLC on the same `SurfaceView` plane for compatibility formats. Both an Android TV emulator and a constrained phone emulator progressively played all 20 HTTPS fixtures. The fixtures include MKV, WebM, AVI, MOV, and MPEG-TS with codecs and track layouts that previously produced audio-only playback or failed during initialization.
 
-This remains a developer preview. Windows and physical ARM hardware are not qualified. The final regression described below was emulator-only; no physical-device commands were issued after the user requested emulator-only testing.
+No test downloaded a complete file before playback, converted video in JavaScript, or passed decoded frames through canvas. The final regression was emulator-only. No physical device was used after the user requested emulator-only testing.
+
+This remains a developer preview. Windows and physical ARM hardware are not qualified.
 
 ## Rendering paths actually measured
 
-| Target | Path | Frame copies |
+| Target | Path | Decoded-frame copies across JS/native boundary |
 | --- | --- | --- |
-| Linux | GStreamer `playbin3` → VA-API → `glsinkbin`/`gtkglsink` | 0 across the JS/Rust boundary |
-| Android phone/TV | Media3 extractor → MediaCodec → `SurfaceView` | 0 across the JS/Rust boundary |
-| Android fallback | GStreamer → bounded fMP4 → WebView MediaSource | Encoded fragments only |
+| Linux | GStreamer `playbin3` → VA-API → `glsinkbin`/`gtkglsink` | 0 |
+| Android fast path | Media3 extractor → MediaCodec → `SurfaceView` | 0 |
+| Android compatibility path | LibVLC demux/decode → `VLCVideoLayout`/`SurfaceView` | 0 |
 
-React renders controls and overlays. It never receives video frames and no canvas is involved.
+React renders controls and overlays in the transparent WebView above the native video plane. It never receives decoded video frames.
 
 ## Emulator profiles
 
 | Target | Configuration | Result |
 | --- | --- | --- |
-| Phone | Android 16 x86_64, 2 cores, 2.5 GiB effective RAM, 1080×1920 | 11/11 post-fix matrix cases passed |
-| TV | Android 16 TV x86_64, 4 cores, 1.5 GiB RAM, 1920×1080 | 11/11 post-fix matrix cases passed |
-| Linux | KDE Wayland, GStreamer 1.28.5, VA-API/GL | Live UHD demo and integration suite passed |
+| Phone | Android 16 x86_64, 2 cores, 2.5 GiB effective RAM, 1080×1920 | 20/20 HTTPS cases passed |
+| TV | Android 16 TV x86_64, 4 cores, 1.5 GiB RAM, 1920×1080 | 20/20 HTTPS cases passed |
+| Linux | KDE Wayland, GStreamer 1.28.5, VA-API/GL | Existing live UHD demo and integration suite passed |
 | Windows | Not available | Not tested |
 
-The TV emulator is intentionally memory-constrained to approximate a low-cost streaming box, but its Goldfish codecs do not model an Amlogic/Mali production decoder. Emulator success is not a substitute for ARM device qualification.
+The phone profile was deliberately CPU-constrained. Emulator software decoders and Goldfish codecs do not model production ARM MediaCodec performance, so this validates behavior and boundedness rather than physical-chip codec capability.
 
 ## Codec/container matrix
 
-Both Android profiles passed:
+Both Android profiles presented real video frames for all 20 cases:
 
-- H.264/AAC in Matroska at 30 FPS
-- VP8/Vorbis in WebM
-- VP9/Opus in WebM
-- HEVC/AC-3 in Matroska at 24 FPS
-- MPEG-4 Part 2/MP3 in AVI
-- H.264/AAC in MPEG-TS
-- AV1/Opus in Matroska
-- H.264/FLAC in Matroska
-- H.264 with two audio tracks and a text subtitle track
+- H.264/AAC MKV at 30 FPS and 60 FPS;
+- VP8/Vorbis and VP9/Opus WebM;
+- HEVC/AC-3, HEVC Main10/E-AC-3, and HEVC Main10/TrueHD MKV;
+- AV1/Opus MKV at two resolutions;
+- MPEG-4 Part 2/MP3 AVI;
+- H.264/AAC and MPEG-2/AC-3 MPEG-TS;
+- H.264/FLAC, H.264/DTS, and H.264/Opus MKV;
+- H.264 MKV with two audio tracks and a subtitle track;
+- ProRes/PCM MOV;
+- FFV1/FLAC MKV;
+- MJPEG/PCM AVI.
 
-The constrained TV additionally presented H.264 at 60.01 FPS with zero drops. The second AV1 fixture presented at approximately its source cadence with zero drops. Every primary case reported a `android-mediacodec:<decoder>:surface-view` backend.
+The matrix now rejects audio-only false positives by requiring the browser-reported presented-video-frame counter to advance. Formats supported by the emulator stayed on MediaCodec. Unsupported formats switched to LibVLC instead of reporting a successful black or audio-only player.
 
-## Controls, tracks, focus, and overlays
+## Controls, tracks, layout, and overlays
 
-The final TV control run passed:
+The TV fast-path control run passed audio and subtitle selection, absolute seek, volume, zoom, fullscreen, buffer telemetry, HTML/SVG overlay visibility, scroll-follow layout, and D-pad focus without accidental seeking. The compatibility-path control run passed seek, volume, overlay visibility, fullscreen, and scroll-follow layout on the same native surface. The constrained phone run passed track selection, subtitles, seek, volume, overlay, fullscreen, and scroll-follow with zero reported drops during the interaction sequence.
 
-- play and continuously updating current position/duration;
-- Japanese audio selection without returning to zero;
-- text subtitle selection and native subtitle rendering;
-- absolute seek to 13 seconds;
-- volume change to 35%;
-- buffer-distance UI backed by native telemetry;
-- HTML/SVG overlay visibility above the native video plane;
-- native 1.1× video zoom while the HTML overlay remains fixed above the video;
-- no fullscreen button on Android TV;
-- D-pad focus from Play to the seek timeline through Norigin spatial navigation without an unintended seek;
-- zero dropped frames through the control sequence.
+Native commands carry a session key. Delayed React cleanup from a prior controller can no longer close or control a replacement native surface.
 
-The TV URL form now leaves the focus tree after loading, so remote input cannot accidentally open the on-screen keyboard. TV subtitles use a larger bottom safe area and remain clear of the controls.
+## HTTPS, buffering, and trust
 
-## HTTPS, buffering, and memory
+All 20 cases streamed over a local HTTPS range server using a private qualification CA. The Android trust manager augments, rather than replaces, system roots. Public HTTPS therefore continues to use normal Android trust while `tlsCaFile: "bundled"` adds the explicitly bundled qualification root. Hostname verification remains enabled.
 
-The private qualification origin uses a local CA. Media3 uses an explicit X.509 trust manager only when the source requests `tlsCaFile: "bundled"`; hostname verification stays enabled.
+The APK build verifies that the bundled CA asset is staged even when only `TAURI_VIDEO_EXTRA_CA` is supplied. LibVLC receives the same app-private trust directory. Range requests remain progressive; neither backend waits for the full resource.
 
-The post-fix 30-second long-stream TV soak measured:
+## Performance samples
 
-- average 30.06 FPS, minimum 27.99 FPS;
-- 0 dropped frames;
-- maximum process PSS 257.6 MiB;
-- maximum Media3 encoded allocation 29.44 MiB;
-- native reserve initially about 48 seconds and remained at 17.0 seconds after the 30-second sample, bounded by the 50-second TV setting.
+The Android TV MediaCodec soak ran for 20 seconds at 29.91 average presented FPS for a 30 FPS source, with 0 dropped frames, 29.33 minimum sampled FPS, 234.6 MiB maximum process PSS, 26.8 MiB maximum encoded-buffer allocation, and at least 23.1 seconds of reserve.
 
-At 6 Mbps plus 250 ms server latency, the 20-second TV soak measured:
+The Android TV LibVLC compatibility soak ran for 20 seconds at 24.43 average presented FPS for a 24 FPS source, advanced 20.14 seconds, and reported 0 dropped frames. Maximum PSS was 277.1 MiB and minimum estimated reserve was 7.8 seconds. One instantaneous FPS sample fell to 14.0 because the counter is sampled over short asynchronous windows. Average cadence and the zero-drop counter were healthy, but the saved run is correctly marked failed against its strict 18 FPS minimum-sample threshold.
 
-- average 30.08 FPS, minimum 29.33 FPS;
-- 0 dropped frames;
-- maximum process PSS 209.8 MiB;
-- a 3.8–7.0 second playable reserve;
-- no playback errors.
+The constrained phone MediaCodec soak ran for 15 seconds at 29.75 average presented FPS, 28.43 minimum sampled FPS, 0 dropped frames, 230.0 MiB maximum process PSS, 27.4 MiB maximum encoded allocation, and at least 29 seconds of reserve.
 
-At an intentionally insufficient 1.44 Mbps, playback correctly exhausted its reserve and entered rebuffering without frame drops, crashes, or unbounded allocation. This is an expected throughput failure, not a passing cadence test.
-
-## UHD/Dolby Vision result
-
-The provided Dune UHD remux reached Media3, but the Android TV emulator rejected its 3840×2160 Dolby Vision profile 7 stream as exceeding the Goldfish HEVC decoder capability and then returned a codec error. Native startup now waits for the first rendered frame, so this class of decoder failure can trigger the compatibility fallback instead of being reported as a usable native player.
-
-That fallback did stream and play the remux rather than downloading it first. During the first seven samples it presented about 23.7–23.9 FPS with zero drops. As the software 4K HEVC-to-H.264 path exhausted its sub-second reserve, it fell to 18.46 FPS, accumulated 12 drops, and reached 720.6 MiB PSS. It therefore fails the low-memory/performance acceptance gate. OpenH264 is now correctly classified as software transcode in telemetry; it is not presented as a hardware backend.
-
-This does not prove that the stream fails on a 4K Android TV chipset; the physical device was intentionally excluded. It remains an ARM hardware release gate.
+In the full constrained-phone matrix, the hardest software compatibility fixtures incurred one or two drops while still sustaining source cadence. Production 4K HDR/Dolby Vision performance remains an ARM hardware qualification gate; x86 emulator software-decoder results must not be represented as physical TV performance.
 
 ## Automated checks
 
 - TypeScript ESM/CJS builds and declaration emit: passed.
 - TypeScript declaration checking, Vitest, and npm publish dry-run: passed.
-- Rust `cargo test --all-targets --features gstreamer-runtime`: 15 passed, 5 network fixtures intentionally ignored.
-- Rust Clippy with warnings denied: passed.
+- Rust tests and Clippy with warnings denied: passed.
 - Android Kotlin compilation with Java 17: passed.
 - Android x86_64 debug APK build/install: passed.
-- Phone native matrix: passed.
-- Low-memory TV native matrix: passed.
-- Phone control/track/overlay test: passed.
-- TV control/overlay/zoom/D-pad no-seek test: passed.
-- TV unthrottled and 6 Mbps soak tests: passed.
+- Android TV 20-format HTTPS matrix: passed.
+- Constrained phone 20-format HTTPS matrix: passed.
+- TV MediaCodec and LibVLC control/overlay/layout tests: passed.
+- Phone MediaCodec control/overlay/layout test: passed.
+- TV MediaCodec and constrained-phone soak tests: passed.
+- TV LibVLC soak: sustained average source cadence with zero drops, but failed the strict minimum-window threshold because one sample measured 14.0 FPS.
 
 ## Evidence
 
-- Post-fix phone matrix: `artifacts/logs/android-phone-post-controls-matrix-matrix.json`
-- Post-fix TV matrix: `artifacts/logs/android-tv-post-controls-matrix-matrix.json`
-- Post-fix phone controls: `artifacts/logs/android-phone-post-controls-final-native-controls.json`
-- Post-fix TV controls: `artifacts/logs/android-tv-dpad-zoom-final-native-controls.json`
-- Post-fix TV soak: `artifacts/logs/android-tv-post-controls-soak-native-soak.json`
-- TV controls: `artifacts/logs/android-tv-low-memory-final-native-controls.json`
-- Final headed API/label control run: `artifacts/logs/android-tv-final-api-native-controls.json`
-- TV long soak: `artifacts/logs/android-tv-low-memory-native-soak.json`
-- TV 6 Mbps soak: `artifacts/logs/android-tv-throttled-6mbps-native-soak.json`
-- Representative TV subtitle capture: `artifacts/android-tv-low-memory-final/controls-03-subtitle-overlay.png`
-- Representative D-pad focus capture: `artifacts/android-tv-low-memory-final/controls-06-dpad-focus.png`
-- Final readable track controls and overlay: `artifacts/android-tv-final-api/controls-03-subtitle-overlay.png`
-- Post-fix TV zoom capture: `artifacts/android-tv-dpad-zoom-final/controls-06-zoom.png`
-- Post-fix TV D-pad timeline focus capture: `artifacts/android-tv-dpad-zoom-final/controls-07-dpad-focus.png`
-- Post-fix phone subtitle/overlay capture: `artifacts/android-phone-post-controls-final/controls-03-subtitle-overlay.png`
+- TV complete matrix: `artifacts/logs/android-tv-complete-matrix.json`
+- Constrained phone complete matrix: `artifacts/logs/android-phone-constrained-complete-matrix.json`
+- TV MediaCodec controls: `artifacts/logs/android-emulator-native-controls-native-controls.json`
+- TV LibVLC controls: `artifacts/logs/android-emulator-compatibility-controls-native-controls.json`
+- Constrained phone controls: `artifacts/logs/android-phone-constrained-controls-native-controls.json`
+- TV MediaCodec soak: `artifacts/logs/android-tv-hardware-soak-native-soak.json`
+- TV LibVLC soak: `artifacts/logs/android-tv-compatibility-soak-native-soak.json`
+- Constrained phone soak: `artifacts/logs/android-phone-constrained-soak-native-soak.json`
 
 ## Remaining release gates
 
-1. Qualify Windows 11 with the bundled MSVC GStreamer runtime.
-2. Run the same suite on ARM64 phones and at least two physical Android TV chipsets.
+1. Qualify Windows 11 with the intended native runtime.
+2. Run the same suite on ARM64 phones and at least two physical Android TV chipsets when physical-device testing is explicitly resumed.
 3. Qualify 4K HEVC/Dolby Vision, HDR policy, surround passthrough, HDMI changes, and thermal behavior on those devices.
 4. Finish PGS/VobSub rendering and chapter extraction.
 5. Add multi-hour, network-loss/recovery, and multi-session memory tests.
-6. Reduce release APK size by shipping ABI-specific, codec-licensed GStreamer bundles instead of the universal debug runtime.
+6. Publish ABI-specific Android artifacts and complete the LibVLC/codec licensing audit before a production release.

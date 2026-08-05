@@ -13,6 +13,7 @@ const serial = options.serial ?? 'emulator-5554'
 const platform = options.platform ?? 'android-phone-native'
 const source = options.source ?? 'https://10.0.2.2:9443/h264-multitrack-subtitles-30.mkv'
 const alreadyLoaded = options['already-loaded'] === '1'
+const skipTracks = options['skip-tracks'] === '1'
 const artifactRoot = options.artifacts ?? 'qualification/artifacts'
 const outputDirectory = join(artifactRoot, platform)
 const logDirectory = join(artifactRoot, 'logs')
@@ -38,7 +39,10 @@ function evaluate(expression) {
   return new Promise((resolve, reject) => {
     const id = ++nextId
     pending.set(id, (message) => {
-      if (message.result.exceptionDetails) reject(new Error(message.result.exceptionDetails.text))
+      if (message.result.exceptionDetails) {
+        const details = message.result.exceptionDetails
+        reject(new Error(details.exception?.description ?? details.text ?? JSON.stringify(details)))
+      }
       else resolve(message.result.result.value)
     })
     socket.send(JSON.stringify({
@@ -65,7 +69,7 @@ async function sample(label) {
       state: stats?.state ?? 'opening',
       backend: stats?.hardwareBackend ?? '',
       encodedBytesBuffered: stats?.encodedBytesBuffered ?? 0,
-      error: document.querySelector('.tvp-error')?.textContent?.replace(/\\s+/g, ' ').trim() ?? '',
+      error: document.querySelector('.player-error, .tvp-error')?.textContent?.replace(/\\s+/g, ' ').trim() ?? '',
       fps: snapshot?.quality?.measuredFps ?? 0,
       totalVideoFrames: snapshot?.quality?.totalVideoFrames ?? 0,
       droppedVideoFrames: snapshot?.quality?.droppedVideoFrames ?? 0,
@@ -74,8 +78,9 @@ async function sample(label) {
       focused: document.activeElement?.getAttribute('aria-label')
         ?? document.activeElement?.textContent?.replace(/\\s+/g, ' ').trim()
         ?? '',
-      zoomLabel: document.querySelector('[aria-label^="Video zoom"]')?.getAttribute('aria-label') ?? '',
-      fullscreenPresent: Boolean(document.querySelector('[aria-label="Fullscreen"]')),
+      zoomValue: document.querySelector('.zoom-control select')?.value ?? '',
+      fullscreenPresent: Boolean(document.querySelector('media-fullscreen-button')),
+      fullscreenActive: document.querySelector('.native-player')?.dataset.fullscreen === 'true',
     };
   })()`)
   process.stdout.write(`${JSON.stringify(result)}\n`)
@@ -107,7 +112,9 @@ if (!alreadyLoaded) {
     if (!input) return false;
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(source)});
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    document.querySelector('.load-button')?.click();
+    const button = document.querySelector('.source-form button[type="submit"]');
+    if (!button) return false;
+    button.click();
     return true;
   })()`)
 }
@@ -115,44 +122,48 @@ const playing = await waitFor((value) => value.currentTime >= 2 && !value.paused
 screenshot('01-playing-overlay')
 
 const beforeAudio = await sample('before-audio')
-await evaluate(`(() => {
-  const bridge = window.__TAURI_VIDEO_TEST__;
-  const tracks = bridge.snapshot().tracks.filter(track => track.kind === 'audio');
-  return bridge.selectTrack('audio', tracks[1].id);
-})()`)
-const audio = await waitFor((value) => (
-  value.tracks.filter((track) => track.kind === 'audio')[1]?.selected
-  && value.currentTime >= beforeAudio.currentTime - 1
-))
-screenshot('02-audio-track')
+let audio = beforeAudio
+let subtitle = beforeAudio
+if (!skipTracks) {
+  await evaluate(`(() => {
+    const bridge = window.__TAURI_VIDEO_TEST__;
+    const tracks = bridge.snapshot().tracks.filter(track => track.kind === 'audio');
+    return bridge.selectTrack('audio', tracks[1].id);
+  })()`)
+  audio = await waitFor((value) => (
+    value.tracks.filter((track) => track.kind === 'audio')[1]?.selected
+    && value.currentTime >= beforeAudio.currentTime - 1
+  ))
+  screenshot('02-audio-track')
 
-await evaluate(`(() => {
-  const bridge = window.__TAURI_VIDEO_TEST__;
-  const track = bridge.snapshot().tracks.find(track => track.kind === 'subtitle');
-  return bridge.selectTrack('subtitle', track.id);
-})()`)
-const subtitle = await waitFor((value) => (
-  value.tracks.some((track) => track.kind === 'subtitle' && track.selected)
-))
-await delay(1_000)
-screenshot('03-subtitle-overlay')
+  await evaluate(`(() => {
+    const bridge = window.__TAURI_VIDEO_TEST__;
+    const track = bridge.snapshot().tracks.find(track => track.kind === 'subtitle');
+    return bridge.selectTrack('subtitle', track.id);
+  })()`)
+  subtitle = await waitFor((value) => (
+    value.tracks.some((track) => track.kind === 'subtitle' && track.selected)
+  ))
+  await delay(1_000)
+  screenshot('03-subtitle-overlay')
+}
 
 await evaluate(`window.__TAURI_VIDEO_TEST__.seek(13)`)
 const seek = await waitFor((value) => value.currentTime >= 13)
 screenshot('04-seek')
 
-await evaluate(`(() => {
-  const input = document.querySelector('.tvp-volume');
-  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '0.35');
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  return true;
-})()`)
+await evaluate(`window.__TAURI_VIDEO_TEST__.setVolume(0.35)`)
 const volume = await waitFor((value) => Math.abs(value.volume - 0.35) < 0.01)
 screenshot('05-volume')
 
-let zoom = { zoomLabel: '', fullscreenPresent: true }
+let zoom = { zoomValue: '', fullscreenPresent: true }
 if (platform.includes('tv')) {
-  await evaluate(`document.querySelector('[aria-label^="Video zoom"]')?.click()`)
+  await evaluate(`(() => {
+    const select = document.querySelector('.zoom-control select');
+    select.value = '1.1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`)
   await delay(500)
   zoom = await sample('zoom')
   screenshot('06-zoom')
@@ -166,24 +177,51 @@ if (platform.includes('tv')) {
   screenshot('07-dpad-focus')
 }
 
+let fullscreen = { fullscreenActive: false }
+if (!platform.includes('tv')) {
+  await evaluate(`document.querySelector('media-fullscreen-button')?.click()`)
+  await delay(750)
+  fullscreen = await sample('fullscreen')
+  screenshot('06-fullscreen-overlay')
+  await evaluate(`document.querySelector('media-fullscreen-button')?.click()`)
+  await delay(500)
+}
+
+const scrollProbe = await evaluate(`(async () => {
+  const player = document.querySelector('.native-player');
+  const before = player.getBoundingClientRect().top;
+  window.scrollBy(0, 160);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const after = player.getBoundingClientRect().top;
+  return { before, after };
+})()`)
+screenshot('08-scrolled-surface')
+await evaluate(`window.scrollTo(0, 0)`)
+
 const overlayVisible = await evaluate(`(() => {
-  const overlay = document.querySelector('.video-overlay');
-  const slot = document.querySelector('.tvp-overlay-slot');
-  return getComputedStyle(slot).pointerEvents === 'none'
-    && overlay.complete && overlay.naturalWidth > 0
+  const overlay = document.querySelector('.html-overlay');
+  const badge = overlay?.querySelector('img');
+  return getComputedStyle(overlay).pointerEvents === 'none'
+    && badge.complete && badge.naturalWidth > 0
     && overlay.getBoundingClientRect().width > 0;
 })()`)
 const assertions = {
   playbackStarted: playing.currentTime >= 2 && playing.fps > 0,
   nativeSurfaceBackend: playing.backend.includes('surface-view'),
-  audioTrackSelected: audio.tracks.filter((track) => track.kind === 'audio')[1]?.selected === true,
-  subtitleTrackSelected: subtitle.tracks.some((track) => track.kind === 'subtitle' && track.selected),
+  ...(!skipTracks ? {
+    audioTrackSelected: audio.tracks.filter((track) => track.kind === 'audio')[1]?.selected === true,
+    subtitleTrackSelected: subtitle.tracks.some((track) => track.kind === 'subtitle' && track.selected),
+  } : {}),
   seekWorked: seek.currentTime >= 13,
   volumeWorked: Math.abs(volume.volume - 0.35) < 0.01,
   overlayVisible,
   zeroDroppedFrames: seek.droppedVideoFrames === 0,
+  scrollMovedPlayerWithHtml: scrollProbe.before - scrollProbe.after > 100,
+  ...(!platform.includes('tv') ? {
+    fullscreenSurfaceAndControls: fullscreen.fullscreenActive,
+  } : {}),
   ...(platform.includes('tv') ? {
-    zoomControlWorks: zoom.zoomLabel.includes('1.1'),
+    zoomControlWorks: zoom.zoomValue === '1.1',
     fullscreenControlRemoved: zoom.fullscreenPresent === false,
     dpadMovedFocus: Boolean(dpad.focused),
     dpadDidNotSeek: Math.abs(dpad.currentTime - volume.currentTime) < 2,
@@ -195,7 +233,7 @@ const report = {
   source,
   passed: Object.values(assertions).every(Boolean),
   assertions,
-  samples: { playing, beforeAudio, audio, subtitle, seek, volume, zoom, dpad },
+  samples: { playing, beforeAudio, audio, subtitle, seek, volume, zoom, dpad, fullscreen, scrollProbe },
 }
 writeFileSync(join(logDirectory, `${platform}-native-controls.json`), `${JSON.stringify(report, null, 2)}\n`)
 const gfxInfo = execFileSync(adb, [

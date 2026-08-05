@@ -53,12 +53,14 @@ interface AndroidPlaybackOptions {
     maxBytes?: number
   }
   decoderFallback?: boolean
+  compatibilityFallback?: 'libvlc' | 'disabled'
+  startupTimeoutSeconds?: number
   dolbyVision?: 'hevc-base-layer' | 'platform'
   tunneling?: boolean
 }
 ```
 
-TV values merge over Android values. Unsupported/omitted fields keep native defaults.
+TV values merge over Android values. Media3/MediaCodec remains the first-choice hardware path. Unless disabled, LibVLC takes over on the same direct Android surface when Media3 has no usable video track, selects a non-native format, reports a decoder error, or fails to render before the startup deadline. Unsupported/omitted fields keep native defaults.
 
 ## Controller
 

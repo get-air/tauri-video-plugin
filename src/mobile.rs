@@ -1,5 +1,6 @@
 use crate::models::{
     NativeControlRequest, NativeLayoutRequest, NativeOpenRequest, NativePlaybackSnapshot,
+    NativeSessionRequest,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -51,12 +52,15 @@ impl<R: Runtime> MobileVideo<R> {
         Ok(())
     }
 
-    pub fn stats_native(&self) -> crate::Result<NativePlaybackSnapshot> {
-        Ok(self.0.run_mobile_plugin("statsNative", ())?)
+    pub fn stats_native(
+        &self,
+        payload: NativeSessionRequest,
+    ) -> crate::Result<NativePlaybackSnapshot> {
+        Ok(self.0.run_mobile_plugin("statsNative", payload)?)
     }
 
-    pub fn close_native(&self) -> crate::Result<()> {
-        self.0.run_mobile_plugin::<()>("closeNative", ())?;
+    pub fn close_native(&self, payload: NativeSessionRequest) -> crate::Result<()> {
+        self.0.run_mobile_plugin::<()>("closeNative", payload)?;
         Ok(())
     }
 }

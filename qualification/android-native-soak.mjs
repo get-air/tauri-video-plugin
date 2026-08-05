@@ -13,6 +13,8 @@ const serial = options.serial ?? 'emulator-5554'
 const platform = options.platform ?? 'android-native'
 const source = options.source ?? 'https://10.0.2.2:9443/h264-aac-long-30.mkv'
 const seconds = Number(options.seconds ?? 30)
+const expectedFps = Number(options['expected-fps'] ?? 30)
+const minimumFps = Number(options['minimum-fps'] ?? Math.max(1, expectedFps - 8))
 const alreadyLoaded = options['already-loaded'] === '1'
 const artifactRoot = options.artifacts ?? 'qualification/artifacts'
 const outputDirectory = join(artifactRoot, platform)
@@ -38,7 +40,10 @@ function evaluate(expression) {
   return new Promise((resolve, reject) => {
     const id = ++nextId
     pending.set(id, (message) => {
-      if (message.result.exceptionDetails) reject(new Error(message.result.exceptionDetails.text))
+      if (message.result.exceptionDetails) {
+        const details = message.result.exceptionDetails
+        reject(new Error(details.exception?.description ?? details.text ?? JSON.stringify(details)))
+      }
       else resolve(message.result.result.value)
     })
     socket.send(JSON.stringify({
@@ -95,7 +100,9 @@ if (!alreadyLoaded) {
     if (!input) return false;
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(source)});
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    document.querySelector('.load-button')?.click();
+    const button = document.querySelector('.source-form button[type="submit"]');
+    if (!button) return false;
+    button.click();
     return true;
   })()`)
 }
@@ -153,7 +160,8 @@ const report = {
 }
 report.assertions = {
   timelineAdvanced: report.summary.endPosition - report.summary.startPosition >= seconds - 2,
-  sourceCadenceHeld: report.summary.averageFps >= 28 && report.summary.minimumFps >= 20,
+  sourceCadenceHeld: report.summary.averageFps >= expectedFps - 2
+    && report.summary.minimumFps >= minimumFps,
   zeroDroppedFrames: report.summary.droppedFrames === 0,
   encodedBufferBounded: report.summary.maximumEncodedMiB <= 96,
   processMemoryBounded: report.summary.maximumPssMiB <= 400,

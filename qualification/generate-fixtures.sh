@@ -21,8 +21,18 @@ ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$video_30" -f lavfi -i "$aud
 ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$video_30" -f lavfi -i "$audio_48" -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 30 -c:a aac -b:a 128k -f mpegts "$fixture_dir/h264-aac.ts"
 ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$video_24" -f lavfi -i "$audio_48" -c:v libsvtav1 -preset 12 -crf 40 -pix_fmt yuv420p -c:a libopus -b:a 96k "$fixture_dir/av1-opus.mkv"
 ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$video_30" -f lavfi -i "$audio_48" -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 30 -c:a flac "$fixture_dir/h264-flac.mkv"
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$video_24" -f lavfi -i "$audio_48" -c:v libx265 -preset ultrafast -x265-params log-level=error:keyint=24 -pix_fmt yuv420p10le -c:a eac3 -b:a 384k "$fixture_dir/hevc-main10-eac3.mkv"
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc2=size=640x360:rate=24000/1001:duration=30" -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=30" -c:v libx265 -preset ultrafast -x265-params log-level=error:keyint=24 -pix_fmt yuv420p10le -c:a eac3 -b:a 384k "$fixture_dir/hevc-main10-eac3-30.mkv"
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$video_24" -f lavfi -i "$audio_48" -c:v libx265 -preset ultrafast -x265-params log-level=error:keyint=24 -pix_fmt yuv420p10le -c:a truehd -strict -2 "$fixture_dir/hevc-main10-truehd.mkv"
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$video_30" -f lavfi -i "$audio_48" -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 30 -c:a dca -b:a 768k -strict -2 "$fixture_dir/h264-dts.mkv"
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$video_30" -f lavfi -i "$audio_48" -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 30 -c:a libopus -b:a 128k "$fixture_dir/h264-opus.mkv"
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$video_30" -f lavfi -i "$audio_48" -c:v mpeg2video -g 15 -b:v 2M -c:a ac3 -b:a 192k -f mpegts "$fixture_dir/mpeg2-ac3.ts"
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$video_24" -f lavfi -i "$audio_48" -c:v prores_ks -profile:v 0 -pix_fmt yuv422p10le -c:a pcm_s16le "$fixture_dir/prores-pcm.mov"
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$video_30" -f lavfi -i "$audio_48" -c:v ffv1 -level 3 -c:a flac "$fixture_dir/ffv1-flac.mkv"
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$video_30" -f lavfi -i "$audio_48" -c:v mjpeg -q:v 5 -c:a pcm_s16le "$fixture_dir/mjpeg-pcm.avi"
 
 for media in "$fixture_dir"/*; do
+  [[ "$media" == *.ffprobe.json ]] && continue
   ffprobe -v error -show_entries format=filename,format_name,duration,size -show_entries stream=index,codec_name,codec_type,width,height,r_frame_rate:stream_tags=language,title -of json "$media" > "$media.ffprobe.json"
 done
 

@@ -119,25 +119,31 @@ pub(crate) async fn native_layout<R: Runtime>(
 }
 
 #[command]
-pub(crate) async fn native_stats<R: Runtime>(app: AppHandle<R>) -> Result<NativePlaybackSnapshot> {
+pub(crate) async fn native_stats<R: Runtime>(
+    app: AppHandle<R>,
+    payload: NativeSessionRequest,
+) -> Result<NativePlaybackSnapshot> {
     #[cfg(mobile)]
     {
-        return app.video().mobile().stats_native();
+        return app.video().mobile().stats_native(payload);
     }
     #[cfg(desktop)]
     {
-        app.video().desktop().stats_native()
+        app.video().desktop().stats_native(payload)
     }
 }
 
 #[command]
-pub(crate) async fn native_close<R: Runtime>(app: AppHandle<R>) -> Result<()> {
+pub(crate) async fn native_close<R: Runtime>(
+    app: AppHandle<R>,
+    payload: NativeSessionRequest,
+) -> Result<()> {
     #[cfg(mobile)]
     {
-        return app.video().mobile().close_native();
+        return app.video().mobile().close_native(payload);
     }
     #[cfg(desktop)]
     {
-        app.video().desktop().close_native()
+        app.video().desktop().close_native(payload)
     }
 }

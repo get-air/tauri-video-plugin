@@ -4,22 +4,28 @@ plugins {
 }
 
 val tauriVideoCaAssets = layout.buildDirectory.dir("generated/tauriVideoCaAssets")
-val stageTauriVideoCaBundle by tasks.registering(Copy::class) {
+val stageTauriVideoCaBundle by tasks.registering {
     val gstreamerRoot = providers.environmentVariable("GSTREAMER_ROOT_ANDROID")
     val extraCa = providers.environmentVariable("TAURI_VIDEO_EXTRA_CA")
-    val bundledCa = gstreamerRoot
+    val defaultCa = layout.projectDirectory.file("src/main/assets/tauri-video-ca-certificates.crt")
+    val bundledCaPath = gstreamerRoot
         .map { "$it/arm64/etc/ssl/certs/ca-certificates.crt" }
-        .orElse(layout.projectDirectory.file("src/main/assets/tauri-video-ca-certificates.crt").asFile.absolutePath)
-    from(bundledCa)
-    into(tauriVideoCaAssets)
-    rename { "tauri-video-ca-certificates.crt" }
+        .orElse(defaultCa.asFile.absolutePath)
+    val output = tauriVideoCaAssets.map { it.file("tauri-video-ca-certificates.crt") }
+    inputs.property("tauriVideoBundledCa", bundledCaPath)
     inputs.property("tauriVideoExtraCa", extraCa.orElse(""))
+    outputs.file(output)
     doLast {
-        extraCa.orNull?.takeIf(String::isNotBlank)?.let { path ->
-            val destination = tauriVideoCaAssets.get().file("tauri-video-ca-certificates.crt").asFile
+        val sources = listOfNotNull(
+            bundledCaPath.orNull?.takeIf(String::isNotBlank),
+            extraCa.orNull?.takeIf(String::isNotBlank),
+        ).map(::file).distinct().filter { it.isFile }
+        val destination = output.get().asFile
+        if (sources.isEmpty()) {
+            destination.delete()
+        } else {
             destination.parentFile.mkdirs()
-            if (destination.isFile) destination.appendText("\n${file(path).readText()}\n")
-            else destination.writeText(file(path).readText())
+            destination.writeText(sources.joinToString("\n") { it.readText().trim() } + "\n")
         }
     }
 }
@@ -60,6 +66,7 @@ android {
         "META-INF/NOTICE",
         "META-INF/NOTICE.txt"
     )
+    packaging.jniLibs.pickFirsts += setOf("lib/*/libc++_shared.so")
 }
 
 tasks.named("preBuild").configure { dependsOn(stageTauriVideoCaBundle) }
@@ -72,6 +79,11 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-hls:1.8.0")
     implementation("androidx.media3:media3-datasource-okhttp:1.8.0")
     implementation("androidx.media3:media3-ui:1.8.0")
+    implementation("org.videolan.android:libvlc-all:3.7.5") {
+        // LibVLC is Java/JNI; use the host app's Kotlin runtime instead of
+        // forcing its newer compiler metadata into Tauri's Android build.
+        exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
+    }
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")

@@ -16,7 +16,7 @@ Developer preview for **Linux · Android · Android TV**. Windows qualification 
 
 ![MKV streaming through the native Linux surface with Media Chrome controls, track selectors, telemetry, and an HTML image overlay](docs/assets/player-mkv.webp)
 
-The WebView handles layout and controls. Media3 or GStreamer decodes and presents the video on a native GPU-backed surface underneath it. No canvas frame pump, no full-file download, and no mandatory pre-conversion.
+The WebView handles layout and controls. Media3/MediaCodec, LibVLC, or GStreamer decodes and presents the video on a native surface underneath it. No canvas frame pump, no full-file download, and no mandatory pre-conversion.
 
 ## What works
 
@@ -32,10 +32,12 @@ flowchart LR
   A["React + CSS"] --> B["HTML video-shaped anchor"]
   B --> C["Headless TypeScript controller"]
   C --> D{"Platform"}
-  D -->|Android / TV| E["Media3 → MediaCodec → SurfaceView"]
+  D -->|Android / TV fast path| E["Media3 → MediaCodec → SurfaceView"]
+  D -->|Android compatibility| I["LibVLC → SurfaceView"]
   D -->|Linux| F["GStreamer → VA-API / GL"]
   D -->|Windows| G["Compatibility path"]
   E --> H["Native video surface"]
+  I --> H
   F --> H
   G --> H
   A -. "DOM overlays stay above the surface" .-> H
@@ -127,7 +129,7 @@ The local Linux capture held the 24 fps source rate with zero dropped frames for
 
 | Platform | Native path | Status |
 | --- | --- | --- |
-| Android / Android TV | Media3 → MediaCodec → `SurfaceView` | Working; emulator-qualified |
+| Android / Android TV | Media3/MediaCodec, then LibVLC → `SurfaceView` | Working; 20-format emulator matrix |
 | Linux | GStreamer → VA-API / GL | Working |
 | Windows | Compatibility pipeline | Native D3D11 presentation remains |
 

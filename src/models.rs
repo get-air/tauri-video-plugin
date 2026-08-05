@@ -293,6 +293,10 @@ pub struct RuntimeLimits {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeOpenRequest {
+    /// Identifies the JavaScript controller that owns the singleton native surface.
+    /// Late cleanup from an older React render must not close a newer player.
+    #[serde(default)]
+    pub session_key: String,
     pub uri: String,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
@@ -323,6 +327,10 @@ pub struct NativeOpenRequest {
     #[serde(default)]
     pub decoder_fallback: Option<bool>,
     #[serde(default)]
+    pub compatibility_fallback: Option<String>,
+    #[serde(default)]
+    pub startup_timeout_ms: Option<u32>,
+    #[serde(default)]
     pub dolby_vision_mode: Option<String>,
     #[serde(default)]
     pub tunneling: Option<bool>,
@@ -335,6 +343,8 @@ const fn default_true() -> bool {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeLayoutRequest {
+    #[serde(default)]
+    pub session_key: String,
     pub x: f64,
     pub y: f64,
     pub width: f64,
@@ -344,11 +354,20 @@ pub struct NativeLayoutRequest {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeControlRequest {
+    #[serde(default)]
+    pub session_key: String,
     pub action: String,
     #[serde(default)]
     pub value: f64,
     #[serde(default = "default_native_track_index")]
     pub index: i32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeSessionRequest {
+    #[serde(default)]
+    pub session_key: String,
 }
 
 const fn default_native_track_index() -> i32 {

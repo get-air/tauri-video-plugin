@@ -2,7 +2,7 @@
 
 The Android implementation stays in the existing Tauri activity. It does not launch a second Activity, player screen, canvas, or texture-copy bridge. Media3 reads and demuxes the URL, MediaCodec decodes it, and `PlayerView` presents directly into a `SurfaceView`. The Tauri WebView remains transparent above that surface for React controls and arbitrary HTML overlays.
 
-The hidden `<video>` element is still the public layout anchor. The TypeScript controller synchronizes the native surface to its physical-pixel rectangle and exposes the same headless API as desktop. If Media3 cannot open a source before rendering its first frame, the controller tears the native surface down and tries the GStreamer/MediaSource compatibility backend.
+The hidden `<video>` element is still the public layout anchor. The TypeScript controller synchronizes the native surface to its physical-pixel rectangle and exposes the same headless API as desktop. If Media3 cannot expose and render a supported video track, the plugin switches the same native plane to LibVLC's direct `SurfaceView` backend. Neither path sends decoded frames through JavaScript or canvas.
 
 ## Supported baseline
 
@@ -10,7 +10,7 @@ The hidden `<video>` element is still the public layout anchor. The TypeScript c
 - arm64-v8a for production
 - x86_64 for emulator smoke tests
 - Media3 1.8.x for the native path
-- GStreamer 1.28.x Android universal SDK for compatibility fallback
+- LibVLC 3.7.x for direct-surface compatibility playback
 - Android NDK 28.2 for the currently qualified build
 - Tauri 2.11+
 
@@ -23,6 +23,8 @@ await attachVideo(video, {
   platform: {
     android: {
       decoderFallback: true,
+      compatibilityFallback: 'libvlc',
+      startupTimeoutSeconds: 8,
       dolbyVision: 'hevc-base-layer',
       buffer: { minSeconds: 12, maxSeconds: 45, playSeconds: 2.5, rebufferSeconds: 6, maxBytes: 96 * 1024 * 1024 },
     },
@@ -50,41 +52,15 @@ This builds a real X.509 trust manager and keeps hostname verification enabled. 
 
 ## Compatibility runtime contents
 
-`build.rs` links the selected GStreamer static archives and their dependent libraries directly into Tauri's JNI library, and stages `libc++_shared.so` for the selected ABI. The current baseline covers:
+The Android Gradle module includes LibVLC per ABI. Media3 remains the small, fast, hardware-decoded path for supported formats. LibVLC is activated only for unsupported tracks or decoder/startup failure and renders directly into `VLCVideoLayout`; it is not an HTTP proxy, transcoder, or full-file conversion stage.
 
-```make
-GSTREAMER_PLUGINS := \
-  $(GSTREAMER_PLUGINS_CORE) \
-  $(GSTREAMER_PLUGINS_PLAYBACK) \
-  $(GSTREAMER_PLUGINS_CODECS) \
-  app matroska isomp4 playback soup \
-  videoparsersbad audioparsers dashdemux hls
-G_IO_MODULES := gnutls
-GSTREAMER_EXTRA_DEPS := gstreamer-app-1.0 gstreamer-pbutils-1.0
-```
-
-GStreamer is not in the native frame path. It remains packaged for extractors/codecs that Media3 cannot open and for consistent cross-platform fallback. `libav` materially increases the APK and has licensing implications, so production distributions should select only codecs they can legally ship.
-
-The Rust `gstreamer-sys` crates must see the same ABI sysroot at link time (`PKG_CONFIG_SYSROOT_DIR`, ABI-specific `PKG_CONFIG_PATH`, and the NDK clang toolchain). The resulting Tauri JNI library and `libc++_shared.so` are staged under the generated app's `jniLibs/<abi>/` directory by the build.
-
-The repository includes a strict environment wrapper for the Rust link step:
-
-```sh
-JAVA_HOME=/usr/lib/jvm/java-17-openjdk \
-GSTREAMER_ROOT_ANDROID=/opt/gstreamer-1.28.5 \
-  ./scripts/android-env.sh aarch64 \
-  sh -c 'cd examples/tauri-app && npx tauri android build --debug --target aarch64 --apk --ci'
-```
-
-It intentionally fails if the ABI sysroot is missing instead of accidentally linking against the host GStreamer installation.
-
-Do not check the SDK or generated `.so` files into the crate. Produce them in CI and cache by GStreamer version, NDK version, and ABI.
+LibVLC increases the APK substantially. Publish ABI-specific Android artifacts, review LGPL/source-offer obligations, and audit every bundled codec against the distribution's licensing requirements.
 
 ## Tauri app permissions
 
 The plugin manifest declares `INTERNET` and `WAKE_LOCK`, the Leanback feature as optional, and touchscreen as optional. The host Android TV application should also include a Leanback launcher banner and D-pad focus states in its UI.
 
-The example CSP permits loopback HTTP only for the compatibility broker. Remote media is fetched by Media3 or GStreamer, so it is not added to WebView CSP.
+Remote media is fetched by Media3 or LibVLC, so it does not need to be added to WebView CSP.
 
 ## Device acceptance test
 
@@ -101,4 +77,4 @@ Run each case on an Android phone and physical Android TV device (not only an em
 9. Play a 4K source for 30 minutes and record thermal throttling, dropped frames, and RSS.
 10. Confirm no second Activity/window is created and HTML remains visible over the video.
 
-Capture `adb logcat | grep -E '(MediaCodec|ExoPlayer|GStreamer|tauri-plugin-video)'` and the `controller.stats()`/`playbackQuality()` snapshots with every failure report.
+Capture `adb logcat | grep -E '(MediaCodec|ExoPlayer|VLC|tauri-plugin-video)'` and the `controller.stats()`/`playbackQuality()` snapshots with every failure report.

@@ -165,6 +165,10 @@ export interface NativeBufferOptions {
 export interface AndroidPlaybackOptions {
   buffer?: NativeBufferOptions
   decoderFallback?: boolean
+  /** Direct-SurfaceView compatibility backend for codecs or containers rejected by Media3. */
+  compatibilityFallback?: 'libvlc' | 'disabled'
+  /** Time allowed for Media3 to render its first frame before compatibility fallback. */
+  startupTimeoutSeconds?: number
   dolbyVision?: 'hevc-base-layer' | 'platform'
   tunneling?: boolean
 }
@@ -792,6 +796,8 @@ export async function attachVideo(
   }
 }
 
+let nativeSurfaceSequence = 0
+
 class NativeSurfaceVideoController extends EventTarget implements VideoController {
   readonly element: HTMLVideoElement
   #options: AttachVideoOptions
@@ -808,6 +814,8 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   #volume = 1
   #muted = false
   #mediaFacadeProperties = new Map<PropertyKey, PropertyDescriptor | undefined>()
+  readonly #sessionKey = globalThis.crypto?.randomUUID?.()
+    ?? `native-${Date.now()}-${++nativeSurfaceSequence}`
 
   constructor(element: HTMLVideoElement, options: AttachVideoOptions) {
     super()
@@ -840,6 +848,7 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     this.#lastLayout = layout
     this.#snapshot = await invoke<NativePlaybackSnapshot>(`${COMMAND}native_open`, {
       payload: {
+        sessionKey: this.#sessionKey,
         ...source,
         ...layout,
         autoplay: this.#options.autoplay ?? false,
@@ -916,7 +925,9 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   }
 
   async stats(): Promise<SessionStats> {
-    const snapshot = await invoke<NativePlaybackSnapshot>(`${COMMAND}native_stats`)
+    const snapshot = await invoke<NativePlaybackSnapshot>(`${COMMAND}native_stats`, {
+      payload: { sessionKey: this.#sessionKey },
+    })
     this.#snapshot = snapshot
     return {
       sessionId: this.sessionId,
@@ -978,7 +989,9 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     window.removeEventListener('resize', this.#handleViewportChange)
     window.visualViewport?.removeEventListener('scroll', this.#handleViewportChange)
     window.visualViewport?.removeEventListener('resize', this.#handleViewportChange)
-    await invoke(`${COMMAND}native_close`).catch(() => undefined)
+    await invoke(`${COMMAND}native_close`, {
+      payload: { sessionKey: this.#sessionKey },
+    }).catch(() => undefined)
     this.#removeMediaFacade()
     this.element.style.removeProperty('visibility')
     document.documentElement.classList.remove('tauri-native-video')
@@ -986,7 +999,9 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
 
   async #control(action: string, value = 0, index = -1): Promise<NativePlaybackSnapshot> {
     return invoke<NativePlaybackSnapshot>(`${COMMAND}native_control`, {
-      payload: { action, value, index },
+      // Session ownership prevents delayed cleanup from a prior React render
+      // from controlling the replacement native player.
+      payload: { sessionKey: this.#sessionKey, action, value, index },
     })
   }
 
@@ -995,7 +1010,9 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     this.#polling = true
     try {
       const previous = this.#snapshot
-      const snapshot = await invoke<NativePlaybackSnapshot>(`${COMMAND}native_stats`)
+      const snapshot = await invoke<NativePlaybackSnapshot>(`${COMMAND}native_stats`, {
+        payload: { sessionKey: this.#sessionKey },
+      })
       this.#snapshot = snapshot
       this.#updateMedia(snapshot)
       this.dispatchEvent(new CustomEvent('timeupdate', {
@@ -1144,7 +1161,9 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
         this.#layoutDirty = false
         const layout = this.#layout()
         if (this.#sameLayout(layout, this.#lastLayout)) continue
-        await invoke(`${COMMAND}native_layout`, { payload: layout })
+        await invoke(`${COMMAND}native_layout`, {
+          payload: { sessionKey: this.#sessionKey, ...layout },
+        })
         this.#lastLayout = layout
       }
     } catch (error) {
@@ -1191,6 +1210,8 @@ function nativeOpenSettings(options: AttachVideoOptions): Record<string, unknown
     rebufferMs: secondsToMilliseconds(buffer?.rebufferSeconds),
     targetBufferBytes: buffer?.maxBytes,
     decoderFallback: androidOptions?.decoderFallback,
+    compatibilityFallback: androidOptions?.compatibilityFallback,
+    startupTimeoutMs: secondsToMilliseconds(androidOptions?.startupTimeoutSeconds),
     dolbyVisionMode: androidOptions?.dolbyVision,
     tunneling: androidOptions?.tunneling,
   }

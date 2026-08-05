@@ -9,7 +9,10 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -49,20 +52,30 @@ import app.tauri.plugin.Plugin
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.security.KeyStore
+import java.security.cert.CertificateException
 import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 import okhttp3.OkHttpClient
+import org.videolan.libvlc.util.VLCVideoLayout
 
 /** Android/TV integration with a direct SurfaceView playback plane. */
 @TauriPlugin
 class VideoPlugin(private val activity: Activity) : Plugin(activity) {
     private val audioManager = activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var focusRequest: AudioFocusRequest? = null
+    private var nativeRoot: FrameLayout? = null
     private var nativeView: PlayerView? = null
+    private var vlcView: VLCVideoLayout? = null
     private var nativePlayer: ExoPlayer? = null
+    private var vlcPlayer: VlcFallbackPlayer? = null
+    private var startupFallback: Runnable? = null
+    private var openGeneration = 0
+    private var activeSessionKey: String? = null
     private var videoSize = VideoSize.UNKNOWN
     private val trackTargets = HashMap<Int, Pair<Tracks.Group, Int>>()
     private var allocator: DefaultAllocator? = null
@@ -75,7 +88,8 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
 
     init {
         bundledCaFile = runCatching {
-            File(activity.filesDir, "tauri-video-ca-certificates.crt").also { destination ->
+            val trustDirectory = File(activity.filesDir, "tauri-video-ca").apply { mkdirs() }
+            File(trustDirectory, "ca-certificates.crt").also { destination ->
                 activity.assets.open("tauri-video-ca-certificates.crt").use { input ->
                     destination.outputStream().use(input::copyTo)
                 }
@@ -92,6 +106,10 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             transparentAncestor = transparentAncestor.parent as? View
         }
         activity.runOnUiThread {
+            val nativeContainer = FrameLayout(activity).apply {
+                setBackgroundColor(Color.BLACK)
+                visibility = View.GONE
+            }
             val playerView = PlayerView(activity).apply {
                 useController = false
                 resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -100,11 +118,19 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 subtitleView?.setBottomPaddingFraction(
                     if (uiType == Configuration.UI_MODE_TYPE_TELEVISION) 0.24f else 0.16f
                 )
-                visibility = View.GONE
             }
+            val compatibilityView = VLCVideoLayout(activity).apply { visibility = View.GONE }
+            val match = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            )
+            nativeContainer.addView(playerView, match)
+            nativeContainer.addView(compatibilityView, match)
             val root = activity.findViewById<ViewGroup>(android.R.id.content)
-            root.addView(playerView, 0, FrameLayout.LayoutParams(1, 1))
+            root.addView(nativeContainer, 0, FrameLayout.LayoutParams(1, 1))
+            nativeRoot = nativeContainer
             nativeView = playerView
+            vlcView = compatibilityView
         }
     }
 
@@ -113,13 +139,18 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         val args = invoke.parseArgs(NativeOpenArgs::class.java)
         activity.runOnUiThread {
             closeNativePlayer()
+            activeSessionKey = args.sessionKey
+            val generation = openGeneration
             val view = nativeView
-            if (view == null) {
+            val root = nativeRoot
+            if (view == null || root == null) {
                 invoke.reject("native video surface is unavailable")
                 return@runOnUiThread
             }
             applyNativeLayout(args.x, args.y, args.width, args.height)
+            root.visibility = View.VISIBLE
             view.visibility = View.VISIBLE
+            vlcView?.visibility = View.GONE
             view.videoSurfaceView?.apply {
                 scaleX = 1f
                 scaleY = 1f
@@ -163,7 +194,7 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             val httpFactory = try {
                 createHttpDataSourceFactory(args, requestHeaders)
             } catch (error: Exception) {
-                view.visibility = View.GONE
+                root.visibility = View.GONE
                 invoke.reject(error.message ?: "Could not configure the HTTPS media source")
                 return@runOnUiThread
             }
@@ -193,16 +224,36 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 }
             })
             val resolved = AtomicBoolean(false)
+            val fallbackStarted = AtomicBoolean(false)
             var playerReady = false
             var firstFrameRendered = false
             fun resolveWhenRenderable() {
-                if (playerReady && firstFrameRendered && resolved.compareAndSet(false, true)) {
+                if (playerReady
+                    && (firstFrameRendered || !args.autoplay)
+                    && resolved.compareAndSet(false, true)
+                ) {
+                    cancelStartupFallback()
                     invoke.resolve(nativeSnapshot(player))
+                }
+            }
+            fun fallbackOrReject(message: String) {
+                if (args.compatibilityFallback == "disabled" || args.decoderFallback == false) {
+                    if (resolved.compareAndSet(false, true)) {
+                        cancelStartupFallback()
+                        invoke.reject(message)
+                    }
+                } else if (fallbackStarted.compareAndSet(false, true)) {
+                    cancelStartupFallback()
+                    startVlcFallback(args, invoke, resolved, generation, message)
                 }
             }
             player.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(state: Int) {
                     if (state == Player.STATE_READY) {
+                        compatibilityReason(player)?.let {
+                            fallbackOrReject(it)
+                            return
+                        }
                         playerReady = true
                         resolveWhenRenderable()
                     }
@@ -214,9 +265,7 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
-                    if (resolved.compareAndSet(false, true)) {
-                        invoke.reject(error.message ?: "Media3 playback failed")
-                    }
+                    fallbackOrReject(error.message ?: "Media3 playback failed")
                 }
 
                 override fun onVideoSizeChanged(size: VideoSize) {
@@ -237,6 +286,14 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 player.playWhenReady = true
             }
             player.prepare()
+            if (args.compatibilityFallback != "disabled" && args.decoderFallback != false) {
+                val timeoutMs = (args.startupTimeoutMs ?: 8_000).coerceIn(2_000, 60_000)
+                startupFallback = Runnable {
+                    if (generation == openGeneration && !resolved.get()) {
+                        fallbackOrReject("Media3 did not render a frame within ${timeoutMs}ms")
+                    }
+                }.also { mainHandler.postDelayed(it, timeoutMs.toLong()) }
+            }
         }
     }
 
@@ -244,8 +301,13 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
     fun controlNative(invoke: Invoke) {
         val args = invoke.parseArgs(NativeControlArgs::class.java)
         activity.runOnUiThread {
+            if (args.sessionKey != activeSessionKey) {
+                invoke.reject("native player session is stale")
+                return@runOnUiThread
+            }
             val player = nativePlayer
-            if (player == null) {
+            val fallback = vlcPlayer
+            if (player == null && fallback == null) {
                 invoke.reject("native player is not open")
                 return@runOnUiThread
             }
@@ -253,27 +315,40 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 when (args.action) {
                     "play" -> {
                         check(setPlaybackActive(true)) { "audio focus was denied" }
-                        player.play()
+                        player?.play() ?: fallback?.play()
                     }
                     "pause" -> {
-                        player.pause()
+                        player?.pause() ?: fallback?.pause()
                         setPlaybackActive(false)
                     }
-                    "seek" -> player.seekTo((args.value * 1000.0).toLong())
-                    "volume" -> player.volume = args.value.toFloat().coerceIn(0f, 1f)
-                    "track" -> selectNativeTrack(player, args.index)
-                    "deselectTrack" -> deselectNativeTrack(player, args.index)
-                    "fit" -> nativeView?.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    "crop" -> nativeView?.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                    "stretch" -> nativeView?.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
-                    "zoom" -> nativeView?.videoSurfaceView?.apply {
-                        val zoom = args.value.toFloat().coerceIn(1f, 2f)
-                        scaleX = zoom
-                        scaleY = zoom
+                    "seek" -> if (player != null) player.seekTo((args.value * 1000.0).toLong())
+                        else fallback?.seekTo((args.value * 1000.0).toLong())
+                    "volume" -> if (player != null) {
+                        player.volume = args.value.toFloat().coerceIn(0f, 1f)
+                    } else fallback?.setVolume(args.value.toFloat())
+                    "track" -> if (player != null) selectNativeTrack(player, args.index)
+                        else fallback?.selectTrack(args.index)
+                    "deselectTrack" -> if (player != null) deselectNativeTrack(player, args.index)
+                        else fallback?.deselectTrack(args.index)
+                    "fit", "crop", "stretch" -> if (player != null) {
+                        nativeView?.resizeMode = when (args.action) {
+                            "crop" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                            "stretch" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                            else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        }
+                    } else fallback?.setFit(args.action)
+                    "zoom" -> if (player != null) {
+                        nativeView?.videoSurfaceView?.apply {
+                            val zoom = args.value.toFloat().coerceIn(1f, 2f)
+                            scaleX = zoom
+                            scaleY = zoom
+                        }
+                    } else {
+                        fallback?.setZoom(args.value.toFloat())
                     }
                     else -> throw IllegalArgumentException("unknown native action ${args.action}")
                 }
-                invoke.resolve(nativeSnapshot(player))
+                invoke.resolve(activeNativeSnapshot())
             } catch (error: Exception) {
                 invoke.reject(error.message ?: "native playback command failed")
             }
@@ -284,6 +359,10 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
     fun layoutNative(invoke: Invoke) {
         val args = invoke.parseArgs(NativeLayoutArgs::class.java)
         activity.runOnUiThread {
+            if (args.sessionKey != activeSessionKey) {
+                invoke.reject("native player session is stale")
+                return@runOnUiThread
+            }
             applyNativeLayout(args.x, args.y, args.width, args.height)
             invoke.resolve()
         }
@@ -291,18 +370,25 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
 
     @Command
     fun statsNative(invoke: Invoke) {
+        val args = invoke.parseArgs(NativeSessionArgs::class.java)
         activity.runOnUiThread {
+            if (args.sessionKey != activeSessionKey) {
+                invoke.reject("native player session is stale")
+                return@runOnUiThread
+            }
             val player = nativePlayer
-            if (player == null) invoke.reject("native player is not open")
-            else player.playerError?.let { invoke.reject(it.message ?: "Media3 playback failed") }
-                ?: invoke.resolve(nativeSnapshot(player))
+            val fallback = vlcPlayer
+            if (player == null && fallback == null) invoke.reject("native player is not open")
+            else player?.playerError?.let { invoke.reject(it.message ?: "Media3 playback failed") }
+                ?: invoke.resolve(activeNativeSnapshot())
         }
     }
 
     @Command
     fun closeNative(invoke: Invoke) {
+        val args = invoke.parseArgs(NativeSessionArgs::class.java)
         activity.runOnUiThread {
-            closeNativePlayer()
+            if (args.sessionKey == activeSessionKey) closeNativePlayer()
             invoke.resolve()
         }
     }
@@ -338,7 +424,10 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                     if (change == AudioManager.AUDIOFOCUS_LOSS
                         || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
                     ) {
-                        activity.runOnUiThread { nativePlayer?.pause() }
+                        activity.runOnUiThread {
+                            nativePlayer?.pause()
+                            vlcPlayer?.pause()
+                        }
                     }
                 }
                 .build()
@@ -364,6 +453,33 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             .build()
     }
 
+    private fun compatibilityReason(player: ExoPlayer): String? {
+        val videoGroups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+        if (videoGroups.isEmpty()) return "Media3 did not expose a playable video track"
+        if (videoGroups.none(Tracks.Group::isSupported)) {
+            return "Media3 has no decoder for the video's format"
+        }
+        val nativeMimes = setOf(
+            MimeTypes.VIDEO_H264,
+            MimeTypes.VIDEO_H265,
+            MimeTypes.VIDEO_DOLBY_VISION,
+            MimeTypes.VIDEO_VP8,
+            MimeTypes.VIDEO_VP9,
+            MimeTypes.VIDEO_AV1,
+            MimeTypes.VIDEO_MPEG2,
+            MimeTypes.VIDEO_MP4V,
+        )
+        val selectedFormats = videoGroups.flatMap { group ->
+            (0 until group.length)
+                .filter(group::isTrackSelected)
+                .map(group::getTrackFormat)
+        }
+        if (selectedFormats.any { it.sampleMimeType !in nativeMimes }) {
+            return "Media3 selected a video format outside the native decoder path"
+        }
+        return null
+    }
+
     private fun deselectNativeTrack(player: ExoPlayer, target: Int) {
         val (group, _) = trackTargets[target] ?: return
         player.trackSelectionParameters = player.trackSelectionParameters
@@ -372,18 +488,141 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             .build()
     }
 
+    private fun startVlcFallback(
+        args: NativeOpenArgs,
+        invoke: Invoke,
+        resolved: AtomicBoolean,
+        generation: Int,
+        media3Failure: String,
+    ) {
+        if (generation != openGeneration || vlcPlayer != null) return
+        val root = nativeRoot
+        val compatibilityView = vlcView
+        if (root == null || compatibilityView == null) {
+            if (resolved.compareAndSet(false, true)) invoke.reject("LibVLC video surface is unavailable")
+            return
+        }
+        val resumePositionMs = nativePlayer?.currentPosition
+            ?.takeIf { it > 0L }
+            ?: args.startPositionSeconds?.times(1_000.0)?.toLong()
+        nativeView?.player = null
+        nativePlayer?.release()
+        nativePlayer = null
+        allocator = null
+        nativeView?.visibility = View.GONE
+        compatibilityView.visibility = View.VISIBLE
+        root.visibility = View.VISIBLE
+        val fallback = try {
+            VlcFallbackPlayer(
+                activity,
+                compatibilityView,
+                VlcFallbackConfig(
+                    uri = args.uri,
+                    autoplay = args.autoplay,
+                    startPositionMs = resumePositionMs,
+                    networkCachingMs = (args.minBufferMs ?: 8_000).coerceIn(1_000, 20_000),
+                    userAgent = args.userAgent,
+                    referrer = args.referrer,
+                    cookies = args.cookies,
+                    caFile = resolveCaFile(args),
+                ),
+            )
+        } catch (error: Throwable) {
+            Log.e("TauriVideo", "LibVLC compatibility backend failed to initialize", error)
+            compatibilityView.visibility = View.GONE
+            root.visibility = View.GONE
+            if (resolved.compareAndSet(false, true)) {
+                invoke.reject(
+                    "$media3Failure; LibVLC startup failed: ${error.javaClass.simpleName}: " +
+                        (error.message ?: "no diagnostic message")
+                )
+            }
+            return
+        }
+        vlcPlayer = fallback
+        compatibilityView.post {
+            if (generation != openGeneration || vlcPlayer !== fallback) return@post
+            fallback.open(
+                onRenderable = {
+                    activity.runOnUiThread {
+                        if (generation != openGeneration || vlcPlayer !== fallback) return@runOnUiThread
+                        if (args.autoplay) setPlaybackActive(true)
+                        if (resolved.compareAndSet(false, true)) {
+                            invoke.resolve(activeNativeSnapshot())
+                        }
+                    }
+                },
+                onError = { vlcFailure ->
+                    activity.runOnUiThread {
+                        if (generation != openGeneration || vlcPlayer !== fallback) return@runOnUiThread
+                        fallback.release()
+                        vlcPlayer = null
+                        compatibilityView.visibility = View.GONE
+                        root.visibility = View.GONE
+                        if (resolved.compareAndSet(false, true)) {
+                            invoke.reject("$media3Failure; $vlcFailure")
+                        }
+                    }
+                },
+            )
+        }
+    }
+
+    private fun cancelStartupFallback() {
+        startupFallback?.let(mainHandler::removeCallbacks)
+        startupFallback = null
+    }
+
+    private fun activeNativeSnapshot(): JSObject {
+        nativePlayer?.let { return nativeSnapshot(it) }
+        val fallback = vlcPlayer ?: error("native player is not open")
+        return vlcSnapshot(fallback.snapshot(nativeContainer))
+    }
+
+    private fun vlcSnapshot(snapshot: VlcSnapshot): JSObject {
+        val tracks = snapshot.tracks.map { track ->
+            JSObject().apply {
+                put("id", track.id.toString())
+                put("index", track.id)
+                put("kind", track.kind)
+                put("language", track.language)
+                put("label", track.label)
+                put("codec", track.codec)
+                put("selected", track.selected)
+            }
+        }
+        return JSObject().apply {
+            put("durationSeconds", snapshot.durationSeconds)
+            put("currentTimeSeconds", snapshot.currentTimeSeconds)
+            put("bufferedSeconds", snapshot.bufferedSeconds)
+            put("playing", snapshot.playing)
+            put("videoWidth", snapshot.videoWidth)
+            put("videoHeight", snapshot.videoHeight)
+            put("presentedFrames", snapshot.presentedFrames)
+            put("droppedFrames", snapshot.droppedFrames)
+            put("measuredFps", snapshot.measuredFps)
+            put("hardwareBackend", snapshot.hardwareBackend)
+            put("encodedBytesBuffered", snapshot.encodedBytesBuffered)
+            put("averageFrameProcessingUs", snapshot.averageFrameProcessingUs)
+            put("container", snapshot.container)
+            put("tracks", JSArray.from(tracks.toTypedArray()))
+        }
+    }
+
+    private fun resolveCaFile(args: NativeOpenArgs): File? = when (val requested = args.tlsCaFile?.trim()) {
+        null, "" -> null
+        "bundled" -> bundledCaFile
+            ?: throw IllegalArgumentException("Bundled TLS CA file is unavailable to the Android app")
+        else -> File(requested).takeIf { it.isFile }
+            ?: throw IllegalArgumentException("TLS CA file is unavailable to the Android app")
+    }
+
     /** Build an HTTPS source with an explicit CA bundle without disabling hostname validation. */
     private fun createHttpDataSourceFactory(
         args: NativeOpenArgs,
         requestHeaders: Map<String, String>,
     ): HttpDataSource.Factory {
-        val caFile = when (val requested = args.tlsCaFile?.trim()) {
-            null, "" -> null
-            "bundled" -> bundledCaFile
-                ?: throw IllegalArgumentException("Bundled TLS CA file is unavailable to the Android app")
-            else -> File(requested).takeIf { it.isFile }
-                ?: throw IllegalArgumentException("TLS CA file is unavailable to the Android app")
-        }
+        val caFile = resolveCaFile(args)
         if (caFile == null) {
             val factory = DefaultHttpDataSource.Factory()
                 .setAllowCrossProtocolRedirects(true)
@@ -408,10 +647,18 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         val trustManagerFactory = TrustManagerFactory
             .getInstance(TrustManagerFactory.getDefaultAlgorithm())
             .apply { init(keyStore) }
-        val trustManager = trustManagerFactory.trustManagers
+        val customTrustManager = trustManagerFactory.trustManagers
             .filterIsInstance<X509TrustManager>()
             .singleOrNull()
             ?: error("TLS CA bundle did not create an X.509 trust manager")
+        val systemTrustManager = TrustManagerFactory
+            .getInstance(TrustManagerFactory.getDefaultAlgorithm())
+            .apply { init(null as KeyStore?) }
+            .trustManagers
+            .filterIsInstance<X509TrustManager>()
+            .singleOrNull()
+            ?: error("Android did not provide a system X.509 trust manager")
+        val trustManager = CompositeTrustManager(systemTrustManager, customTrustManager)
         val sslContext = SSLContext.getInstance("TLS").apply {
             init(null, arrayOf(trustManager), null)
         }
@@ -428,7 +675,7 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private fun applyNativeLayout(x: Double, y: Double, width: Double, height: Double) {
-        val view = nativeView ?: return
+        val view = nativeRoot ?: return
         val params = (view.layoutParams as? FrameLayout.LayoutParams) ?: FrameLayout.LayoutParams(1, 1)
         params.width = width.toInt().coerceAtLeast(1)
         params.height = height.toInt().coerceAtLeast(1)
@@ -502,11 +749,18 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private fun closeNativePlayer() {
+        openGeneration += 1
+        activeSessionKey = null
+        cancelStartupFallback()
         setPlaybackActive(false)
         nativeView?.player = null
         nativePlayer?.release()
         nativePlayer = null
-        nativeView?.visibility = View.GONE
+        vlcPlayer?.release()
+        vlcPlayer = null
+        nativeView?.visibility = View.VISIBLE
+        vlcView?.visibility = View.GONE
+        nativeRoot?.visibility = View.GONE
         allocator = null
         videoDecoderName = "uninitialized"
         lastRenderedFrames = 0L
@@ -533,6 +787,7 @@ private fun containerFromUri(value: String): String {
 
 @InvokeArg class PlaybackArgs { var playing: Boolean = false }
 @InvokeArg class NativeOpenArgs {
+    var sessionKey: String = ""
     var uri: String = ""; var x: Double = 0.0; var y: Double = 0.0
     var width: Double = 1.0; var height: Double = 1.0; var autoplay: Boolean = false
     var headers: HashMap<String, String> = HashMap()
@@ -542,14 +797,43 @@ private fun containerFromUri(value: String): String {
     var playbackBufferMs: Int? = null; var rebufferMs: Int? = null
     var targetBufferBytes: Long? = null; var decoderFallback: Boolean? = null
     var dolbyVisionMode: String? = null; var tunneling: Boolean? = null
+    var compatibilityFallback: String? = null; var startupTimeoutMs: Int? = null
 }
 @InvokeArg class NativeLayoutArgs {
+    var sessionKey: String = ""
     var x: Double = 0.0; var y: Double = 0.0; var width: Double = 1.0; var height: Double = 1.0
 }
 @InvokeArg class NativeControlArgs {
+    var sessionKey: String = ""
     var action: String = ""; var value: Double = 0.0; var index: Int = -1
 }
+@InvokeArg class NativeSessionArgs { var sessionKey: String = "" }
 
 private val PEM_CERTIFICATE = Regex(
     "-----BEGIN CERTIFICATE-----[\\s\\S]+?-----END CERTIFICATE-----"
 )
+
+private class CompositeTrustManager(
+    private val system: X509TrustManager,
+    private val custom: X509TrustManager,
+) : X509TrustManager {
+    override fun getAcceptedIssuers(): Array<X509Certificate> =
+        system.acceptedIssuers + custom.acceptedIssuers
+
+    override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {
+        system.checkClientTrusted(chain, authType)
+    }
+
+    override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
+        try {
+            system.checkServerTrusted(chain, authType)
+        } catch (systemError: CertificateException) {
+            try {
+                custom.checkServerTrusted(chain, authType)
+            } catch (customError: CertificateException) {
+                customError.addSuppressed(systemError)
+                throw customError
+            }
+        }
+    }
+}
