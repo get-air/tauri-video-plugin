@@ -10,9 +10,24 @@ const params = new URLSearchParams(window.location.search)
 const configuredSource = params.get('source') ?? import.meta.env.VITE_VIDEO_SOURCE
 const caFile = params.get('ca') ?? import.meta.env.VITE_VIDEO_CA_FILE
 const tvMode = params.get('tv') === '1' || import.meta.env.VITE_VIDEO_TV === '1'
-const initialBackend = (
+const android = /Android/i.test(navigator.userAgent)
+const backendOptions: ReadonlyArray<{ value: VideoBackend; label: string }> = android
+  ? [
+      { value: 'auto', label: 'Auto' },
+      { value: 'media3', label: 'Media3' },
+      { value: 'libvlc', label: 'LibVLC' },
+    ]
+  : [
+      { value: 'auto', label: 'Auto' },
+      { value: 'gstreamer', label: 'GStreamer' },
+      { value: 'mpv', label: 'mpv' },
+    ]
+const configuredBackend = (
   params.get('backend') ?? import.meta.env.VITE_VIDEO_BACKEND ?? 'auto'
 ) as VideoBackend
+const initialBackend = backendOptions.some(({ value }) => value === configuredBackend)
+  ? configuredBackend
+  : 'auto'
 const defaultUri = configuredSource ?? DEFAULT_SOURCE.uri
 
 declare global {
@@ -169,9 +184,9 @@ export default function App() {
               value={requestedBackend}
               onChange={(event) => changeBackend(event.currentTarget.value as VideoBackend)}
             >
-              <option value="auto">Auto</option>
-              <option value="gstreamer">GStreamer</option>
-              <option value="mpv">mpv</option>
+              {backendOptions.map(({ value, label }) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
             </select>
           </label>
           <div className="pipeline-status" title={activeBackend ?? 'Resolving playback backend'}>
@@ -284,5 +299,8 @@ function formatBackend(active: string | undefined, requested: VideoBackend) {
   if (value?.includes('libvlc') || value?.includes('vlc')) return 'LibVLC'
   if (value?.includes('media3') || value?.includes('mediacodec')) return 'Media3'
   if (requested === 'auto') return 'Resolving'
-  return requested === 'gstreamer' ? 'GStreamer' : requested === 'libvlc' ? 'LibVLC' : requested
+  if (requested === 'gstreamer') return 'GStreamer'
+  if (requested === 'libvlc') return 'LibVLC'
+  if (requested === 'media3') return 'Media3'
+  return requested
 }

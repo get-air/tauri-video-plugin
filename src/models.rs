@@ -314,6 +314,10 @@ pub struct NativeOpenRequest {
     pub tls_ca_file: Option<String>,
     pub x: f64,
     pub y: f64,
+    #[serde(default)]
+    pub scroll_x: f64,
+    #[serde(default)]
+    pub scroll_y: f64,
     pub width: f64,
     pub height: f64,
     #[serde(default = "default_true")]
@@ -359,6 +363,10 @@ pub struct NativeLayoutRequest {
     pub session_key: String,
     pub x: f64,
     pub y: f64,
+    #[serde(default)]
+    pub scroll_x: f64,
+    #[serde(default)]
+    pub scroll_y: f64,
     pub width: f64,
     pub height: f64,
 }

@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import { bufferedAhead } from './index'
-import { snapNativeSurfaceLayout, visibleSurfaceBounds } from './native-surface-layout'
+import {
+  sameNativeSurfacePosition,
+  snapNativeSurfaceLayout,
+  visibleSurfaceBounds,
+} from './native-surface-layout'
 
 function ranges(values: Array<[number, number]>): TimeRanges {
   return {
@@ -53,5 +57,18 @@ describe('native surface geometry', () => {
       1,
       { width: 240, height: 180 },
     )).toEqual({ left: 0, top: 0, right: 240, bottom: 180 })
+  })
+
+  it('treats Android root scrolling as the same document-space layout', () => {
+    const before = { x: 20, y: 600, width: 900, height: 500, scrollX: 0, scrollY: 0 }
+    const after = { x: 20, y: 180, width: 900, height: 500, scrollX: 0, scrollY: 420 }
+    expect(sameNativeSurfacePosition(after, before, true)).toBe(true)
+    expect(sameNativeSurfacePosition(after, before, false)).toBe(false)
+  })
+
+  it('still sends Android layout changes caused by nested scrollers', () => {
+    const before = { x: 20, y: 600, width: 900, height: 500, scrollX: 0, scrollY: 0 }
+    const nestedScroll = { x: 20, y: 180, width: 900, height: 500, scrollX: 0, scrollY: 0 }
+    expect(sameNativeSurfacePosition(nestedScroll, before, true)).toBe(false)
   })
 })

@@ -15,6 +15,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -71,6 +72,14 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
     private var nativeRoot: FrameLayout? = null
     private var nativeView: PlayerView? = null
     private var vlcView: VLCVideoLayout? = null
+    private var hostWebView: WebView? = null
+    private var nativeDocumentX = 0.0
+    private var nativeDocumentY = 0.0
+    private var nativeLayoutActive = false
+    private val nativeScrollSynchronizer = ViewTreeObserver.OnPreDrawListener {
+        syncNativeScrollPosition()
+        true
+    }
     private var nativePlayer: ExoPlayer? = null
     private var vlcPlayer: VlcFallbackPlayer? = null
     private var startupFallback: Runnable? = null
@@ -106,6 +115,10 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             transparentAncestor = transparentAncestor.parent as? View
         }
         activity.runOnUiThread {
+            hostWebView?.viewTreeObserver?.takeIf { it.isAlive }
+                ?.removeOnPreDrawListener(nativeScrollSynchronizer)
+            hostWebView = webView
+            webView.viewTreeObserver.addOnPreDrawListener(nativeScrollSynchronizer)
             val nativeContainer = FrameLayout(activity).apply {
                 setBackgroundColor(Color.BLACK)
                 visibility = View.GONE
@@ -147,7 +160,14 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 invoke.reject("native video surface is unavailable")
                 return@runOnUiThread
             }
-            applyNativeLayout(args.x, args.y, args.width, args.height)
+            applyNativeLayout(
+                args.x,
+                args.y,
+                args.width,
+                args.height,
+                args.scrollX,
+                args.scrollY,
+            )
             root.visibility = View.VISIBLE
             view.visibility = View.VISIBLE
             vlcView?.visibility = View.GONE
@@ -276,6 +296,13 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                         }
                         playerReady = true
                         resolveWhenRenderable()
+                    } else if (state == Player.STATE_ENDED) {
+                        // ExoPlayer keeps playWhenReady armed at EOF. Clear it
+                        // so a later seek behaves like an ended HTML video:
+                        // update the frame, but stay paused until play() is
+                        // explicitly requested.
+                        player.playWhenReady = false
+                        setPlaybackActive(false)
                     }
                 }
 
@@ -338,7 +365,12 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 when (args.action) {
                     "play" -> {
                         check(setPlaybackActive(true)) { "audio focus was denied" }
-                        player?.play() ?: fallback?.play()
+                        if (player != null) {
+                            if (player.playbackState == Player.STATE_ENDED) {
+                                player.seekToDefaultPosition()
+                            }
+                            player.play()
+                        } else fallback?.play()
                     }
                     "pause" -> {
                         player?.pause() ?: fallback?.pause()
@@ -386,7 +418,14 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 invoke.reject("native player session is stale")
                 return@runOnUiThread
             }
-            applyNativeLayout(args.x, args.y, args.width, args.height)
+            applyNativeLayout(
+                args.x,
+                args.y,
+                args.width,
+                args.height,
+                args.scrollX,
+                args.scrollY,
+            )
             invoke.resolve()
         }
     }
@@ -698,14 +737,41 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         return factory
     }
 
-    private fun applyNativeLayout(x: Double, y: Double, width: Double, height: Double) {
+    private fun applyNativeLayout(
+        x: Double,
+        y: Double,
+        width: Double,
+        height: Double,
+        scrollX: Double,
+        scrollY: Double,
+    ) {
         val view = nativeRoot ?: return
         val params = (view.layoutParams as? FrameLayout.LayoutParams) ?: FrameLayout.LayoutParams(1, 1)
-        params.width = width.toInt().coerceAtLeast(1)
-        params.height = height.toInt().coerceAtLeast(1)
-        params.leftMargin = x.toInt()
-        params.topMargin = y.toInt()
-        view.layoutParams = params
+        val nextWidth = width.toInt().coerceAtLeast(1)
+        val nextHeight = height.toInt().coerceAtLeast(1)
+        if (params.width != nextWidth || params.height != nextHeight
+            || params.leftMargin != 0 || params.topMargin != 0
+        ) {
+            params.width = nextWidth
+            params.height = nextHeight
+            params.leftMargin = 0
+            params.topMargin = 0
+            view.layoutParams = params
+        }
+        nativeDocumentX = x + scrollX
+        nativeDocumentY = y + scrollY
+        nativeLayoutActive = true
+        syncNativeScrollPosition()
+    }
+
+    private fun syncNativeScrollPosition() {
+        if (!nativeLayoutActive) return
+        val view = nativeRoot ?: return
+        val webView = hostWebView ?: return
+        val nextX = (nativeDocumentX - webView.scrollX).toFloat()
+        val nextY = (nativeDocumentY - webView.scrollY).toFloat()
+        if (view.translationX != nextX) view.translationX = nextX
+        if (view.translationY != nextY) view.translationY = nextY
     }
 
     private fun nativeSnapshot(player: ExoPlayer): JSObject {
@@ -785,6 +851,7 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         nativeView?.visibility = View.VISIBLE
         vlcView?.visibility = View.GONE
         nativeRoot?.visibility = View.GONE
+        nativeLayoutActive = false
         allocator = null
         videoDecoderName = "uninitialized"
         lastRenderedFrames = 0L
@@ -813,6 +880,7 @@ private fun containerFromUri(value: String): String {
 @InvokeArg class NativeOpenArgs {
     var sessionKey: String = ""
     var uri: String = ""; var x: Double = 0.0; var y: Double = 0.0
+    var scrollX: Double = 0.0; var scrollY: Double = 0.0
     var backend: String? = null
     var width: Double = 1.0; var height: Double = 1.0; var autoplay: Boolean = false
     var volume: Double = 1.0; var muted: Boolean = false
@@ -828,6 +896,7 @@ private fun containerFromUri(value: String): String {
 @InvokeArg class NativeLayoutArgs {
     var sessionKey: String = ""
     var x: Double = 0.0; var y: Double = 0.0; var width: Double = 1.0; var height: Double = 1.0
+    var scrollX: Double = 0.0; var scrollY: Double = 0.0
 }
 @InvokeArg class NativeControlArgs {
     var sessionKey: String = ""

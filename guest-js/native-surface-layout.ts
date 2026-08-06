@@ -5,6 +5,11 @@ export interface NativeSurfaceLayout {
   height: number
 }
 
+export interface NativeSurfacePosition extends NativeSurfaceLayout {
+  scrollX: number
+  scrollY: number
+}
+
 export interface RectLike {
   left: number
   top: number
@@ -49,6 +54,22 @@ export function visibleSurfaceBounds(
     right: clamp((layout.x + layout.width) / scale, 0, viewport.width),
     bottom: clamp((layout.y + layout.height) / scale, 0, viewport.height),
   }
+}
+
+export function sameNativeSurfacePosition(
+  left: NativeSurfacePosition,
+  right: NativeSurfacePosition | undefined,
+  android: boolean,
+): boolean {
+  if (!right) return false
+  const leftX = android ? left.x + left.scrollX : left.x
+  const leftY = android ? left.y + left.scrollY : left.y
+  const rightX = android ? right.x + right.scrollX : right.x
+  const rightY = android ? right.y + right.scrollY : right.y
+  return Math.abs(leftX - rightX) < 0.5
+    && Math.abs(leftY - rightY) < 0.5
+    && Math.abs(left.width - right.width) < 0.5
+    && Math.abs(left.height - right.height) < 0.5
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

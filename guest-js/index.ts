@@ -1,8 +1,10 @@
 import { invoke } from '@tauri-apps/api/core'
 import {
+  sameNativeSurfacePosition,
   snapNativeSurfaceLayout,
   visibleSurfaceBounds,
   type NativeSurfaceLayout,
+  type NativeSurfacePosition,
 } from './native-surface-layout'
 
 const COMMAND = 'plugin:video|'
@@ -808,6 +810,13 @@ export async function attachVideo(
 
 let nativeSurfaceSequence = 0
 
+interface NativeMediaElementState {
+  owner: string
+  originals: Map<PropertyKey, PropertyDescriptor | undefined>
+}
+
+const nativeMediaElementStates = new WeakMap<HTMLVideoElement, NativeMediaElementState>()
+
 class NativeSurfaceVideoController extends EventTarget implements VideoController {
   readonly element: HTMLVideoElement
   #options: AttachVideoOptions
@@ -819,13 +828,12 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   #layoutInFlight = false
   #layoutDirty = false
   #scrollTargets: EventTarget[] = []
-  #lastLayout?: { x: number; y: number; width: number; height: number }
+  #lastLayout?: NativeSurfacePosition
   #pendingSeek?: { target: number; deadline: number }
   #polling = false
   #destroyed = false
   #volume = 1
   #muted = false
-  #mediaFacadeProperties = new Map<PropertyKey, PropertyDescriptor | undefined>()
   readonly #sessionKey = globalThis.crypto?.randomUUID?.()
     ?? `native-${Date.now()}-${++nativeSurfaceSequence}`
 
@@ -856,6 +864,7 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
 
   async start(): Promise<void> {
     if (this.#options.signal?.aborted) throw this.#options.signal.reason
+    this.#claimMediaElement()
     this.#claimCssSurface()
     this.element.style.visibility = 'hidden'
     const source = typeof this.#options.source === 'string'
@@ -879,9 +888,15 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
       await invoke(`${COMMAND}native_close`, {
         payload: { sessionKey: this.#sessionKey },
       }).catch(() => undefined)
-      this.element.style.removeProperty('visibility')
+      if (this.#removeMediaFacade()) this.element.style.removeProperty('visibility')
       this.#releaseCssSurface()
       throw error
+    }
+    if (!this.#ownsMediaElement()) {
+      await invoke(`${COMMAND}native_close`, {
+        payload: { sessionKey: this.#sessionKey },
+      }).catch(() => undefined)
+      throw new DOMException('native video controller was superseded', 'AbortError')
     }
     // Keep the WebView aperture closed until the native host confirms that its
     // surface is in place. Publishing first exposes a frame of the native base
@@ -936,6 +951,7 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     if (!Number.isFinite(positionSeconds) || positionSeconds < 0) {
       throw new RangeError('positionSeconds must be a finite, non-negative number')
     }
+    const wasPlaying = this.#snapshot?.playing ?? false
     const target = Math.min(this.#snapshot?.durationSeconds || Number.POSITIVE_INFINITY, positionSeconds)
     this.#pendingSeek = { target, deadline: performance.now() + 30_000 }
     if (this.#snapshot) {
@@ -949,6 +965,13 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     try {
       const snapshot = this.#acceptSnapshot(await this.#control('seek', target))
       this.#updateMedia(snapshot)
+      // A seek to the end can make the native backend pause synchronously.
+      // Since #acceptSnapshot has already published that state, the next poll
+      // cannot detect the playing -> paused edge. Mirror it here so headed
+      // controls (for example media-chrome) immediately switch to Play.
+      if (wasPlaying && !snapshot.playing) {
+        this.element.dispatchEvent(new Event('pause'))
+      }
     } catch (error) {
       this.#pendingSeek = undefined
       throw error
@@ -1043,12 +1066,13 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     await invoke(`${COMMAND}native_close`, {
       payload: { sessionKey: this.#sessionKey },
     }).catch(() => undefined)
-    this.#removeMediaFacade()
-    // Preserve the facade's final audio state on the real HTMLMediaElement so
-    // a replacement controller/source starts from the same user preference.
-    this.element.volume = this.#volume
-    this.element.muted = this.#muted
-    this.element.style.removeProperty('visibility')
+    if (this.#removeMediaFacade()) {
+      // Preserve the facade's final audio state on the real HTMLMediaElement so
+      // a replacement controller/source starts from the same user preference.
+      this.element.volume = this.#volume
+      this.element.muted = this.#muted
+      this.element.style.removeProperty('visibility')
+    }
     this.#releaseCssSurface()
   }
 
@@ -1091,6 +1115,12 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
         this.element.dispatchEvent(new Event(snapshot.playing ? 'play' : 'pause'))
         if (snapshot.playing) this.element.dispatchEvent(new Event('playing'))
       }
+      const wasEnded = Boolean(previous
+        && previous.durationSeconds > 0
+        && previous.currentTimeSeconds >= previous.durationSeconds)
+      const isEnded = snapshot.durationSeconds > 0
+        && snapshot.currentTimeSeconds >= snapshot.durationSeconds
+      if (!wasEnded && isEnded) this.element.dispatchEvent(new Event('ended'))
     } catch (error) {
       if (!this.#destroyed) this.dispatchEvent(new CustomEvent('error', { detail: normalizeError(error) }))
     } finally {
@@ -1141,11 +1171,15 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   }
 
   #installMediaFacade(): void {
+    const state = nativeMediaElementStates.get(this.element)
+    if (!state || state.owner !== this.#sessionKey) return
     const source = typeof this.#options.source === 'string'
       ? this.#options.source
       : this.#options.source.uri
     const define = (key: PropertyKey, descriptor: PropertyDescriptor) => {
-      this.#mediaFacadeProperties.set(key, Object.getOwnPropertyDescriptor(this.element, key))
+      if (!state.originals.has(key)) {
+        state.originals.set(key, Object.getOwnPropertyDescriptor(this.element, key))
+      }
       Object.defineProperty(this.element, key, { configurable: true, ...descriptor })
     }
     const ranges = (end: number): TimeRanges => ({
@@ -1194,26 +1228,46 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     define('videoHeight', { get: () => this.#snapshot?.videoHeight ?? 0 })
   }
 
-  #removeMediaFacade(): void {
-    for (const [key, descriptor] of this.#mediaFacadeProperties) {
+  #removeMediaFacade(): boolean {
+    const state = nativeMediaElementStates.get(this.element)
+    if (!state || state.owner !== this.#sessionKey) return false
+    for (const [key, descriptor] of state.originals) {
       if (descriptor) Object.defineProperty(this.element, key, descriptor)
       else delete (this.element as unknown as Record<PropertyKey, unknown>)[key]
     }
-    this.#mediaFacadeProperties.clear()
+    nativeMediaElementStates.delete(this.element)
+    return true
   }
 
-  #measureLayout(): { layout: NativeSurfaceLayout; scale: number } {
+  #measureLayout(): { layout: NativeSurfacePosition; scale: number } {
     const rect = this.element.getBoundingClientRect()
     // Android SurfaceView layout uses physical pixels; GTK Fixed uses logical
     // coordinates, which match getBoundingClientRect directly.
     const android = /Android/i.test(navigator.userAgent)
     const scale = android ? (window.devicePixelRatio || 1) : 1
-    const layout = snapNativeSurfaceLayout(rect, android, scale)
+    const layout = {
+      ...snapNativeSurfaceLayout(rect, android, scale),
+      scrollX: android ? Math.round(window.scrollX * scale) : 0,
+      scrollY: android ? Math.round(window.scrollY * scale) : 0,
+    }
     return { layout, scale }
   }
 
   #claimCssSurface(): void {
     claimNativeCssSurface(this.#sessionKey, this.element)
+  }
+
+  #claimMediaElement(): void {
+    const state = nativeMediaElementStates.get(this.element)
+    if (state) state.owner = this.#sessionKey
+    else nativeMediaElementStates.set(this.element, {
+      owner: this.#sessionKey,
+      originals: new Map(),
+    })
+  }
+
+  #ownsMediaElement(): boolean {
+    return nativeMediaElementStates.get(this.element)?.owner === this.#sessionKey
   }
 
   #publishCssLayout(layout: NativeSurfaceLayout, scale: number): void {
@@ -1245,7 +1299,7 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
       if (!this.#layoutDirty) return
       this.#layoutDirty = false
       const { layout, scale } = this.#measureLayout()
-      if (this.#sameLayout(layout, this.#lastLayout)) {
+      if (sameNativeSurfacePosition(layout, this.#lastLayout, /Android/i.test(navigator.userAgent))) {
         // Viewport bounds can change without moving the anchor. Refresh the
         // surrounding panels while keeping the already-aligned aperture.
         this.#publishCssLayout(layout, scale)
@@ -1269,16 +1323,6 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     }
   }
 
-  #sameLayout(
-    left: { x: number; y: number; width: number; height: number },
-    right?: { x: number; y: number; width: number; height: number },
-  ): boolean {
-    if (!right) return false
-    return Math.abs(left.x - right.x) < 0.5
-      && Math.abs(left.y - right.y) < 0.5
-      && Math.abs(left.width - right.width) < 0.5
-      && Math.abs(left.height - right.height) < 0.5
-  }
 }
 
 interface NativeCssSurfaceState {

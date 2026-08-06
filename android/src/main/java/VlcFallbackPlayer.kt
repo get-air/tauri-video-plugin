@@ -28,6 +28,7 @@ internal class VlcFallbackPlayer(
     private var startPositionApplied = false
     private var playingEventReceived = false
     private var videoOutputReceived = false
+    private var ended = false
 
     init {
         // LibVLC appends its selected audio output and display chroma to this
@@ -53,6 +54,7 @@ internal class VlcFallbackPlayer(
                 when (event.type) {
                     MediaPlayer.Event.Buffering -> bufferingPercent = event.buffering.coerceIn(0f, 100f)
                     MediaPlayer.Event.Playing -> {
+                        ended = false
                         playingEventReceived = true
                         applyStartPosition()
                         resolveWhenRenderable(completed, onRenderable)
@@ -66,6 +68,7 @@ internal class VlcFallbackPlayer(
                             onError("LibVLC could not decode or read the stream")
                         }
                     }
+                    MediaPlayer.Event.EndReached -> ended = true
                 }
             }
             val media = Media(libVlc, Uri.parse(config.uri)).apply {
@@ -107,11 +110,18 @@ internal class VlcFallbackPlayer(
         config.startPositionMs?.takeIf { it > 0L }?.let { player.setTime(it, true) }
     }
 
-    fun play() = player.play()
+    fun play() {
+        if (ended) {
+            ended = false
+            player.setTime(0L, true)
+        }
+        player.play()
+    }
 
     fun pause() = player.pause()
 
     fun seekTo(positionMs: Long) {
+        ended = false
         player.setTime(positionMs.coerceAtLeast(0L), true)
     }
 
