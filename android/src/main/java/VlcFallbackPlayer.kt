@@ -86,6 +86,7 @@ internal class VlcFallbackPlayer(
             }
             player.media = media
             media.release()
+            player.volume = (config.initialVolume.coerceIn(0f, 1f) * 100f).toInt()
             player.play()
         } catch (error: Throwable) {
             if (completed.compareAndSet(false, true)) {
@@ -251,6 +252,7 @@ internal class VlcFallbackPlayer(
 internal data class VlcFallbackConfig(
     val uri: String,
     val autoplay: Boolean,
+    val initialVolume: Float,
     val startPositionMs: Long?,
     val networkCachingMs: Int,
     val userAgent: String?,

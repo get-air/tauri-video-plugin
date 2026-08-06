@@ -21,7 +21,17 @@ tauri-build = { version = "2.5.6", default-features = false , features = [] }
 tauri = { version = "2.10.3", features = [] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-tauri-plugin-video = { path = "../../../" }
+tauri-plugin-video = { path = "../../../", features = ["gstreamer-runtime", "mpv-runtime"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 tauri-plugin-video = { path = "../../../", default-features = false }
+
+# Tauri 2.11.4 assumes the WebView's second GTK ancestor is always GtkWindow.
+# Native video uses GtkOverlay, so pointer/touch delivery on compositors such as
+# COSMIC can otherwise abort inside the undecorated resize handler. This pins
+# Tauri's upstream fallible-downcast fix until it is included in a crates.io
+# release: https://github.com/tauri-apps/tauri/pull/15701
+[patch.crates-io]
+tauri-runtime = { git = "https://github.com/tauri-apps/tauri.git", rev = "5a882eccfda53a189ec076c79c4ad186f50db5ff" }
+tauri-runtime-wry = { git = "https://github.com/tauri-apps/tauri.git", rev = "5a882eccfda53a189ec076c79c4ad186f50db5ff" }
+tauri-utils = { git = "https://github.com/tauri-apps/tauri.git", rev = "5a882eccfda53a189ec076c79c4ad186f50db5ff" }

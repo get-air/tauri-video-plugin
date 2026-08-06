@@ -156,6 +156,22 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 scaleY = 1f
             }
             nativeContainer = containerFromUri(args.uri)
+            val requestedBackend = args.backend?.lowercase() ?: "auto"
+            if (requestedBackend !in setOf("auto", "media3", "libvlc")) {
+                root.visibility = View.GONE
+                invoke.reject("backend '$requestedBackend' is not available on Android")
+                return@runOnUiThread
+            }
+            if (requestedBackend == "libvlc") {
+                startVlcFallback(
+                    args,
+                    invoke,
+                    AtomicBoolean(false),
+                    generation,
+                    "LibVLC was explicitly requested",
+                )
+                return@runOnUiThread
+            }
             val minBufferMs = (args.minBufferMs ?: 12_000).coerceIn(1_000, 120_000)
             val maxBufferMs = (args.maxBufferMs ?: 45_000).coerceIn(minBufferMs, 180_000)
             val playbackBufferMs = (args.playbackBufferMs ?: 2_500).coerceIn(250, minBufferMs)
@@ -213,6 +229,7 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 .build()
             nativePlayer = player
             view.player = player
+            player.volume = if (args.muted) 0f else args.volume.toFloat().coerceIn(0f, 1f)
             player.addAnalyticsListener(object : AnalyticsListener {
                 override fun onVideoDecoderInitialized(
                     eventTime: AnalyticsListener.EventTime,
@@ -237,7 +254,10 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 }
             }
             fun fallbackOrReject(message: String) {
-                if (args.compatibilityFallback == "disabled" || args.decoderFallback == false) {
+                if (requestedBackend == "media3"
+                    || args.compatibilityFallback == "disabled"
+                    || args.decoderFallback == false
+                ) {
                     if (resolved.compareAndSet(false, true)) {
                         cancelStartupFallback()
                         invoke.reject(message)
@@ -286,7 +306,10 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 player.playWhenReady = true
             }
             player.prepare()
-            if (args.compatibilityFallback != "disabled" && args.decoderFallback != false) {
+            if (requestedBackend != "media3"
+                && args.compatibilityFallback != "disabled"
+                && args.decoderFallback != false
+            ) {
                 val timeoutMs = (args.startupTimeoutMs ?: 8_000).coerceIn(2_000, 60_000)
                 startupFallback = Runnable {
                     if (generation == openGeneration && !resolved.get()) {
@@ -519,6 +542,7 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 VlcFallbackConfig(
                     uri = args.uri,
                     autoplay = args.autoplay,
+                    initialVolume = if (args.muted) 0f else args.volume.toFloat().coerceIn(0f, 1f),
                     startPositionMs = resumePositionMs,
                     networkCachingMs = (args.minBufferMs ?: 8_000).coerceIn(1_000, 20_000),
                     userAgent = args.userAgent,
@@ -789,7 +813,9 @@ private fun containerFromUri(value: String): String {
 @InvokeArg class NativeOpenArgs {
     var sessionKey: String = ""
     var uri: String = ""; var x: Double = 0.0; var y: Double = 0.0
+    var backend: String? = null
     var width: Double = 1.0; var height: Double = 1.0; var autoplay: Boolean = false
+    var volume: Double = 1.0; var muted: Boolean = false
     var headers: HashMap<String, String> = HashMap()
     var cookies: String? = null; var userAgent: String? = null; var referrer: String? = null
     var tlsCaFile: String? = null; var startPositionSeconds: Double? = null

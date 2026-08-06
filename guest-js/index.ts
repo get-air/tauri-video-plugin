@@ -1,4 +1,9 @@
 import { invoke } from '@tauri-apps/api/core'
+import {
+  snapNativeSurfaceLayout,
+  visibleSurfaceBounds,
+  type NativeSurfaceLayout,
+} from './native-surface-layout'
 
 const COMMAND = 'plugin:video|'
 const DEFAULT_MIME_TYPES = [
@@ -140,6 +145,8 @@ export interface RuntimeCapabilities {
 
 export interface AttachVideoOptions {
   source: string | VideoSource
+  /** Native playback engine. `auto` keeps the platform default and its configured fallback. */
+  backend?: VideoBackend
   transcodePolicy?: TranscodePolicy
   bufferAheadSeconds?: number
   suspendWhenHidden?: boolean
@@ -148,6 +155,8 @@ export interface AttachVideoOptions {
   platform?: PlatformPlaybackOptions
   signal?: AbortSignal
 }
+
+export type VideoBackend = 'auto' | 'media3' | 'libvlc' | 'gstreamer' | 'mpv'
 
 export interface NativeBufferOptions {
   /** Minimum encoded reserve before the native backend tries to refill. */
@@ -770,6 +779,7 @@ export async function attachVideo(
       return controller
     } catch (error) {
       await controller.destroy().catch(() => undefined)
+      if (options.backend && options.backend !== 'auto') throw error
       // Media3 is the zero-copy fast path on Android. Keep the GStreamer/MSE
       // backend as a compatibility fallback for extractors/codecs a specific
       // device image does not expose.
@@ -808,7 +818,9 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   #layoutFrame?: number
   #layoutInFlight = false
   #layoutDirty = false
+  #scrollTargets: EventTarget[] = []
   #lastLayout?: { x: number; y: number; width: number; height: number }
+  #pendingSeek?: { target: number; deadline: number }
   #polling = false
   #destroyed = false
   #volume = 1
@@ -821,6 +833,11 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     super()
     this.element = element
     this.#options = options
+    const initialVolume = Number(element.volume)
+    this.#volume = Number.isFinite(initialVolume)
+      ? Math.min(1, Math.max(0, initialVolume))
+      : 1
+    this.#muted = Boolean(element.muted)
   }
 
   get sessionId(): string { return /Android/i.test(navigator.userAgent) ? 'android-native-surface' : 'linux-native-surface' }
@@ -839,22 +856,37 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
 
   async start(): Promise<void> {
     if (this.#options.signal?.aborted) throw this.#options.signal.reason
-    document.documentElement.classList.add('tauri-native-video')
+    this.#claimCssSurface()
     this.element.style.visibility = 'hidden'
     const source = typeof this.#options.source === 'string'
       ? { uri: this.#options.source }
       : this.#options.source
-    const layout = this.#layout()
+    const { layout, scale } = this.#measureLayout()
     this.#lastLayout = layout
-    this.#snapshot = await invoke<NativePlaybackSnapshot>(`${COMMAND}native_open`, {
-      payload: {
-        sessionKey: this.#sessionKey,
-        ...source,
-        ...layout,
-        autoplay: this.#options.autoplay ?? false,
-        ...nativeOpenSettings(this.#options),
-      },
-    })
+    try {
+      this.#snapshot = await invoke<NativePlaybackSnapshot>(`${COMMAND}native_open`, {
+        payload: {
+          sessionKey: this.#sessionKey,
+          ...source,
+          ...layout,
+          autoplay: this.#options.autoplay ?? false,
+          volume: this.#volume,
+          muted: this.#muted,
+          ...nativeOpenSettings(this.#options),
+        },
+      })
+    } catch (error) {
+      await invoke(`${COMMAND}native_close`, {
+        payload: { sessionKey: this.#sessionKey },
+      }).catch(() => undefined)
+      this.element.style.removeProperty('visibility')
+      this.#releaseCssSurface()
+      throw error
+    }
+    // Keep the WebView aperture closed until the native host confirms that its
+    // surface is in place. Publishing first exposes a frame of the native base
+    // whenever GTK and WebKit commit scroll/resize frames at different times.
+    this.#publishCssLayout(layout, scale)
     this.#updateMedia(this.#snapshot)
     this.#installMediaFacade()
     this.element.dispatchEvent(new Event('loadedmetadata'))
@@ -867,7 +899,11 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     }
     this.#resize = new ResizeObserver(() => this.#requestLayout())
     this.#resize.observe(this.element)
-    window.addEventListener('scroll', this.#handleViewportChange, { capture: true, passive: true })
+    this.#scrollTargets = nativeScrollTargets(this.element)
+    for (const target of this.#scrollTargets) {
+      target.addEventListener('scroll', this.#handleViewportChange, { capture: true, passive: true })
+    }
+    window.addEventListener('wheel', this.#handleViewportChange, { capture: true, passive: true })
     window.addEventListener('resize', this.#handleViewportChange, { passive: true })
     window.visualViewport?.addEventListener('scroll', this.#handleViewportChange, { passive: true })
     window.visualViewport?.addEventListener('resize', this.#handleViewportChange, { passive: true })
@@ -877,14 +913,14 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   }
 
   async play(): Promise<void> {
-    this.#snapshot = await this.#control('play')
+    this.#acceptSnapshot(await this.#control('play'))
     this.element.dispatchEvent(new Event('play'))
     this.element.dispatchEvent(new Event('playing'))
   }
 
   pause(): void {
     void this.#control('pause').then((snapshot) => {
-      this.#snapshot = snapshot
+      this.#acceptSnapshot(snapshot)
       this.element.dispatchEvent(new Event('pause'))
     })
   }
@@ -892,7 +928,7 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   async setVolume(volume: number): Promise<void> {
     const clamped = Math.min(1, Math.max(0, volume))
     this.#volume = clamped
-    this.#snapshot = await this.#control('volume', this.#muted ? 0 : clamped)
+    this.#acceptSnapshot(await this.#control('volume', this.#muted ? 0 : clamped))
     this.element.dispatchEvent(new Event('volumechange'))
   }
 
@@ -900,23 +936,34 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     if (!Number.isFinite(positionSeconds) || positionSeconds < 0) {
       throw new RangeError('positionSeconds must be a finite, non-negative number')
     }
+    const target = Math.min(this.#snapshot?.durationSeconds || Number.POSITIVE_INFINITY, positionSeconds)
+    this.#pendingSeek = { target, deadline: performance.now() + 30_000 }
+    if (this.#snapshot) {
+      this.#snapshot = { ...this.#snapshot, currentTimeSeconds: target }
+    }
     this.element.dispatchEvent(new Event('seeking'))
-    this.#snapshot = await this.#control('seek', positionSeconds)
-    this.#updateMedia(this.#snapshot)
     this.dispatchEvent(new CustomEvent('timeupdate', {
-      detail: { currentTime: positionSeconds },
+      detail: { currentTime: target },
     }))
     this.element.dispatchEvent(new Event('timeupdate'))
-    this.element.dispatchEvent(new Event('seeked'))
+    try {
+      const snapshot = this.#acceptSnapshot(await this.#control('seek', target))
+      this.#updateMedia(snapshot)
+    } catch (error) {
+      this.#pendingSeek = undefined
+      throw error
+    } finally {
+      this.element.dispatchEvent(new Event('seeked'))
+    }
   }
 
   async selectTrack(kind: TrackKind, trackId?: string): Promise<void> {
     const selected = this.#snapshot?.tracks.find((track) => track.id === trackId && track.kind === kind)
     if (selected) {
-      this.#snapshot = await this.#control('track', 0, selected.index)
+      this.#acceptSnapshot(await this.#control('track', 0, selected.index))
     } else if (kind === 'subtitle') {
       const active = this.#media.tracks.find((track) => track.kind === kind && track.selected)
-      if (active) this.#snapshot = await this.#control('deselectTrack', 0, active.streamIndex)
+      if (active) this.#acceptSnapshot(await this.#control('deselectTrack', 0, active.streamIndex))
     }
     for (const track of this.#media.tracks) {
       if (track.kind === kind) track.selected = track.id === trackId
@@ -928,7 +975,7 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     const snapshot = await invoke<NativePlaybackSnapshot>(`${COMMAND}native_stats`, {
       payload: { sessionKey: this.#sessionKey },
     })
-    this.#snapshot = snapshot
+    this.#acceptSnapshot(snapshot)
     return {
       sessionId: this.sessionId,
       mode: 'native-decode',
@@ -972,11 +1019,11 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   }
 
   async setVideoFit(mode: VideoFitMode): Promise<void> {
-    this.#snapshot = await this.#control(mode === 'cover' ? 'crop' : mode)
+    this.#acceptSnapshot(await this.#control(mode === 'cover' ? 'crop' : mode))
   }
 
   async setVideoZoom(scale: number): Promise<void> {
-    this.#snapshot = await this.#control('zoom', Math.min(2, Math.max(1, scale)))
+    this.#acceptSnapshot(await this.#control('zoom', Math.min(2, Math.max(1, scale))))
   }
 
   async destroy(): Promise<void> {
@@ -985,7 +1032,11 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     if (this.#timer !== undefined) clearInterval(this.#timer)
     if (this.#layoutFrame !== undefined) cancelAnimationFrame(this.#layoutFrame)
     this.#resize?.disconnect()
-    window.removeEventListener('scroll', this.#handleViewportChange, true)
+    for (const target of this.#scrollTargets) {
+      target.removeEventListener('scroll', this.#handleViewportChange, true)
+    }
+    this.#scrollTargets = []
+    window.removeEventListener('wheel', this.#handleViewportChange, true)
     window.removeEventListener('resize', this.#handleViewportChange)
     window.visualViewport?.removeEventListener('scroll', this.#handleViewportChange)
     window.visualViewport?.removeEventListener('resize', this.#handleViewportChange)
@@ -993,8 +1044,12 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
       payload: { sessionKey: this.#sessionKey },
     }).catch(() => undefined)
     this.#removeMediaFacade()
+    // Preserve the facade's final audio state on the real HTMLMediaElement so
+    // a replacement controller/source starts from the same user preference.
+    this.element.volume = this.#volume
+    this.element.muted = this.#muted
     this.element.style.removeProperty('visibility')
-    document.documentElement.classList.remove('tauri-native-video')
+    this.#releaseCssSurface()
   }
 
   async #control(action: string, value = 0, index = -1): Promise<NativePlaybackSnapshot> {
@@ -1007,16 +1062,20 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
 
   async #poll(): Promise<void> {
     if (this.#destroyed || this.#polling) return
+    // Safety net for layout changes caused by transforms, programmatic scroll,
+    // or WebKit builds that omit an element-scroll event from the window path.
+    // The geometry comparison prevents unchanged layouts from crossing IPC.
+    this.#requestLayout()
     this.#polling = true
     try {
       const previous = this.#snapshot
       const snapshot = await invoke<NativePlaybackSnapshot>(`${COMMAND}native_stats`, {
         payload: { sessionKey: this.#sessionKey },
       })
-      this.#snapshot = snapshot
-      this.#updateMedia(snapshot)
+      const visibleSnapshot = this.#acceptSnapshot(snapshot)
+      this.#updateMedia(visibleSnapshot)
       this.dispatchEvent(new CustomEvent('timeupdate', {
-        detail: { currentTime: snapshot.currentTimeSeconds },
+        detail: { currentTime: visibleSnapshot.currentTimeSeconds },
       }))
       this.dispatchEvent(new CustomEvent('bufferprogress', {
         detail: { bufferedAhead: this.bufferedAhead() },
@@ -1062,6 +1121,23 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
       })),
     }
     Object.assign(this.#media, nextMedia)
+  }
+
+  #acceptSnapshot(snapshot: NativePlaybackSnapshot): NativePlaybackSnapshot {
+    const pending = this.#pendingSeek
+    if (!pending) {
+      this.#snapshot = snapshot
+      return snapshot
+    }
+    const reachedTarget = Math.abs(snapshot.currentTimeSeconds - pending.target) <= 1
+    if (reachedTarget || performance.now() >= pending.deadline) {
+      this.#pendingSeek = undefined
+      this.#snapshot = snapshot
+      return snapshot
+    }
+    const optimistic = { ...snapshot, currentTimeSeconds: pending.target }
+    this.#snapshot = optimistic
+    return optimistic
   }
 
   #installMediaFacade(): void {
@@ -1126,17 +1202,26 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     this.#mediaFacadeProperties.clear()
   }
 
-  #layout(): { x: number; y: number; width: number; height: number } {
+  #measureLayout(): { layout: NativeSurfaceLayout; scale: number } {
     const rect = this.element.getBoundingClientRect()
     // Android SurfaceView layout uses physical pixels; GTK Fixed uses logical
     // coordinates, which match getBoundingClientRect directly.
-    const scale = /Android/i.test(navigator.userAgent) ? (window.devicePixelRatio || 1) : 1
-    return {
-      x: rect.left * scale,
-      y: rect.top * scale,
-      width: rect.width * scale,
-      height: rect.height * scale,
-    }
+    const android = /Android/i.test(navigator.userAgent)
+    const scale = android ? (window.devicePixelRatio || 1) : 1
+    const layout = snapNativeSurfaceLayout(rect, android, scale)
+    return { layout, scale }
+  }
+
+  #claimCssSurface(): void {
+    claimNativeCssSurface(this.#sessionKey, this.element)
+  }
+
+  #publishCssLayout(layout: NativeSurfaceLayout, scale: number): void {
+    updateNativeCssSurface(this.#sessionKey, layout, scale)
+  }
+
+  #releaseCssSurface(): void {
+    releaseNativeCssSurface(this.#sessionKey)
   }
 
   #handleViewportChange = (): void => {
@@ -1157,15 +1242,23 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     if (this.#destroyed || this.#layoutInFlight) return
     this.#layoutInFlight = true
     try {
-      while (!this.#destroyed && this.#layoutDirty) {
-        this.#layoutDirty = false
-        const layout = this.#layout()
-        if (this.#sameLayout(layout, this.#lastLayout)) continue
-        await invoke(`${COMMAND}native_layout`, {
-          payload: { sessionKey: this.#sessionKey, ...layout },
-        })
-        this.#lastLayout = layout
+      if (!this.#layoutDirty) return
+      this.#layoutDirty = false
+      const { layout, scale } = this.#measureLayout()
+      if (this.#sameLayout(layout, this.#lastLayout)) {
+        // Viewport bounds can change without moving the anchor. Refresh the
+        // surrounding panels while keeping the already-aligned aperture.
+        this.#publishCssLayout(layout, scale)
+        return
       }
+      await invoke(`${COMMAND}native_layout`, {
+        payload: { sessionKey: this.#sessionKey, ...layout },
+      })
+      this.#lastLayout = layout
+      // This is deliberately after native_layout. The native player may be
+      // briefly hidden by the old aperture, but an unsynchronised move can
+      // never reveal the transparent window beneath it.
+      this.#publishCssLayout(layout, scale)
     } catch (error) {
       if (!this.#destroyed) {
         this.dispatchEvent(new CustomEvent('error', { detail: normalizeError(error) }))
@@ -1188,6 +1281,176 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   }
 }
 
+interface NativeCssSurfaceState {
+  owner: string
+  anchor: HTMLVideoElement
+  backdrop: HTMLDivElement
+  style: HTMLStyleElement
+  panels: readonly [HTMLDivElement, HTMLDivElement, HTMLDivElement, HTMLDivElement]
+  drilled: Array<{ element: HTMLElement; previousOwner: string | null }>
+}
+
+const nativeCssSurfaceScope = globalThis as typeof globalThis & {
+  __TAURI_VIDEO_NATIVE_CSS_SURFACE__?: NativeCssSurfaceState
+}
+
+function claimNativeCssSurface(owner: string, anchor: HTMLVideoElement): void {
+  const existing = nativeCssSurfaceScope.__TAURI_VIDEO_NATIVE_CSS_SURFACE__
+  if (existing?.anchor === anchor && existing.backdrop.isConnected) {
+    // A source replacement uses the same DOM anchor. Transfer the aperture in
+    // place so there is no frame where the ancestors are transparent but the
+    // opaque panels are absent. Stale controller cleanup now sees the new owner
+    // and becomes a no-op, including across Vite hot-module replacement.
+    for (const { element } of existing.drilled) {
+      if (element.getAttribute('data-tauri-native-video-hole') === existing.owner) {
+        element.setAttribute('data-tauri-native-video-hole', owner)
+      }
+    }
+    existing.style.textContent = nativeHoleStyle(owner)
+    existing.owner = owner
+    const root = document.documentElement
+    root.dataset.tauriNativeVideoSession = owner
+    root.classList.add('tauri-native-video')
+    return
+  }
+  if (existing) releaseNativeCssSurface(existing.owner)
+  // Vite HMR can leave DOM artifacts created by a previous module instance,
+  // whose module-local state is no longer reachable. A native window supports
+  // one video aperture, so stale plugin-owned artifacts are always safe to
+  // retire before establishing the next owner.
+  for (const orphan of document.querySelectorAll('[data-tauri-native-video-backdrop]')) {
+    orphan.remove()
+  }
+  for (const orphan of document.querySelectorAll('[data-tauri-native-video-hole]')) {
+    orphan.removeAttribute('data-tauri-native-video-hole')
+  }
+  const root = document.documentElement
+  const backdropColor = nativeBackdropColor(root)
+  const backdrop = document.createElement('div')
+  backdrop.dataset.tauriNativeVideoBackdrop = ''
+  backdrop.setAttribute('aria-hidden', 'true')
+  Object.assign(backdrop.style, {
+    position: 'fixed',
+    zIndex: '-2147483647',
+    inset: '0',
+    pointerEvents: 'none',
+    contain: 'strict',
+  })
+  const panels = Array.from({ length: 4 }, () => {
+    const panel = document.createElement('div')
+    Object.assign(panel.style, {
+      position: 'absolute',
+      background: backdropColor,
+    })
+    backdrop.append(panel)
+    return panel
+  }) as [HTMLDivElement, HTMLDivElement, HTMLDivElement, HTMLDivElement]
+
+  const drilled: NativeCssSurfaceState['drilled'] = []
+  for (let element: HTMLElement | null = anchor.parentElement; element; element = element.parentElement) {
+    drilled.push({ element, previousOwner: element.getAttribute('data-tauri-native-video-hole') })
+    element.setAttribute('data-tauri-native-video-hole', owner)
+  }
+  const style = document.createElement('style')
+  style.dataset.tauriNativeVideoBackdropStyle = ''
+  style.textContent = nativeHoleStyle(owner)
+  backdrop.prepend(style)
+  document.body.prepend(backdrop)
+  root.dataset.tauriNativeVideoSession = owner
+  root.classList.add('tauri-native-video')
+  nativeCssSurfaceScope.__TAURI_VIDEO_NATIVE_CSS_SURFACE__ = {
+    owner,
+    anchor,
+    backdrop,
+    style,
+    panels,
+    drilled,
+  }
+}
+
+function updateNativeCssSurface(owner: string, layout: NativeSurfaceLayout, scale: number): void {
+  const state = nativeCssSurfaceScope.__TAURI_VIDEO_NATIVE_CSS_SURFACE__
+  if (!state || state.owner !== owner) return
+  const root = document.documentElement
+  const { left, top, right, bottom } = visibleSurfaceBounds(layout, scale, {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  })
+  const middleHeight = Math.max(0, bottom - top)
+  const [topPanel, bottomPanel, leftPanel, rightPanel] = state.panels
+  Object.assign(topPanel.style, { inset: '0 0 auto 0', height: `${top}px` })
+  Object.assign(bottomPanel.style, { inset: `${bottom}px 0 0 0` })
+  Object.assign(leftPanel.style, {
+    inset: `${top}px auto auto 0`,
+    width: `${left}px`,
+    height: `${middleHeight}px`,
+  })
+  Object.assign(rightPanel.style, {
+    inset: `${top}px 0 auto ${right}px`,
+    height: `${middleHeight}px`,
+  })
+  root.style.setProperty('--tauri-native-video-left', `${left}px`)
+  root.style.setProperty('--tauri-native-video-top', `${top}px`)
+  root.style.setProperty('--tauri-native-video-right', `${right}px`)
+  root.style.setProperty('--tauri-native-video-bottom', `${bottom}px`)
+  root.style.setProperty('--tauri-native-video-width', `${layout.width / scale}px`)
+  root.style.setProperty('--tauri-native-video-height', `${layout.height / scale}px`)
+}
+
+function releaseNativeCssSurface(owner: string): void {
+  const state = nativeCssSurfaceScope.__TAURI_VIDEO_NATIVE_CSS_SURFACE__
+  if (!state || state.owner !== owner) return
+  for (const { element, previousOwner } of state.drilled) {
+    if (element.getAttribute('data-tauri-native-video-hole') !== owner) continue
+    if (previousOwner === null) element.removeAttribute('data-tauri-native-video-hole')
+    else element.setAttribute('data-tauri-native-video-hole', previousOwner)
+  }
+  state.backdrop.remove()
+  delete nativeCssSurfaceScope.__TAURI_VIDEO_NATIVE_CSS_SURFACE__
+  const root = document.documentElement
+  delete root.dataset.tauriNativeVideoSession
+  root.classList.remove('tauri-native-video')
+  for (const property of NATIVE_VIDEO_CSS_PROPERTIES) root.style.removeProperty(property)
+}
+
+function nativeHoleStyle(owner: string): string {
+  return `
+    [data-tauri-native-video-hole="${owner}"] { background: transparent !important; }
+    body[data-tauri-native-video-hole="${owner}"] { position: relative !important; isolation: isolate !important; }
+  `
+}
+
+function nativeScrollTargets(anchor: HTMLElement): EventTarget[] {
+  const targets = new Set<EventTarget>([window, document])
+  for (let element: HTMLElement | null = anchor.parentElement; element; element = element.parentElement) {
+    targets.add(element)
+  }
+  return [...targets]
+}
+
+function nativeBackdropColor(root: HTMLElement): string {
+  const configured = getComputedStyle(root)
+    .getPropertyValue('--tauri-native-video-backdrop-color')
+    .trim()
+  if (configured) return configured
+  for (const element of [document.body, root]) {
+    const color = getComputedStyle(element).backgroundColor
+    if (color && color !== 'transparent' && !/rgba\([^)]*,\s*0(?:\.0+)?\s*\)/i.test(color)) {
+      return color
+    }
+  }
+  return '#000'
+}
+
+const NATIVE_VIDEO_CSS_PROPERTIES = [
+  '--tauri-native-video-left',
+  '--tauri-native-video-top',
+  '--tauri-native-video-right',
+  '--tauri-native-video-bottom',
+  '--tauri-native-video-width',
+  '--tauri-native-video-height',
+] as const
+
 function nativeOpenSettings(options: AttachVideoOptions): Record<string, unknown> {
   const userAgent = navigator.userAgent
   const android = /Android/i.test(userAgent)
@@ -1204,6 +1467,7 @@ function nativeOpenSettings(options: AttachVideoOptions): Record<string, unknown
     ?? (linux ? options.platform?.linux?.buffer : undefined)
     ?? (windows ? options.platform?.windows?.buffer : undefined)
   return {
+    backend: options.backend ?? 'auto',
     minBufferMs: secondsToMilliseconds(buffer?.minSeconds),
     maxBufferMs: secondsToMilliseconds(buffer?.maxSeconds),
     playbackBufferMs: secondsToMilliseconds(buffer?.playSeconds),

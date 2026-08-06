@@ -298,6 +298,10 @@ pub struct NativeOpenRequest {
     #[serde(default)]
     pub session_key: String,
     pub uri: String,
+    /// Playback engine requested by the JavaScript controller. `auto` preserves
+    /// the platform-native default and permits its configured compatibility fallback.
+    #[serde(default)]
+    pub backend: Option<String>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
     #[serde(default)]
@@ -314,6 +318,10 @@ pub struct NativeOpenRequest {
     pub height: f64,
     #[serde(default = "default_true")]
     pub autoplay: bool,
+    #[serde(default = "default_volume")]
+    pub volume: f64,
+    #[serde(default)]
+    pub muted: bool,
     #[serde(default)]
     pub min_buffer_ms: Option<u32>,
     #[serde(default)]
@@ -338,6 +346,10 @@ pub struct NativeOpenRequest {
 
 const fn default_true() -> bool {
     true
+}
+
+const fn default_volume() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

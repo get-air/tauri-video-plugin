@@ -17,6 +17,7 @@ import {
   attachVideo,
   type MediaInfo,
   type PlaybackQuality,
+  type VideoBackend,
   type VideoController,
   type VideoFitMode,
   type VideoSource,
@@ -33,20 +34,25 @@ export interface PlayerTelemetry {
 
 interface NativeMediaPlayerProps {
   source: string | VideoSource
+  backend?: VideoBackend
   reloadKey: number
   title: string
   onController: (controller: VideoController | null) => void
+  onBackendResolved: (backend: string | undefined) => void
   onTelemetry: (telemetry: PlayerTelemetry) => void
   onError: (error: Error) => void
 }
 
 const EMPTY_MEDIA: MediaInfo = { seekable: true, live: false, tracks: [], chapters: [] }
+const AUDIO_STATE_KEY = 'tauri-video-example:audio-state'
 
 export function NativeMediaPlayer({
   source,
+  backend,
   reloadKey,
   title,
   onController,
+  onBackendResolved,
   onTelemetry,
   onError,
 }: NativeMediaPlayerProps) {
@@ -105,6 +111,9 @@ export function NativeMediaPlayer({
   useEffect(() => {
     const element = videoRef.current
     if (!element) return
+    restoreAudioState(element)
+    const persistAudio = () => saveAudioState(element)
+    element.addEventListener('volumechange', persistAudio)
     const abort = new AbortController()
     let cancelled = false
     let interval: number | undefined
@@ -130,6 +139,7 @@ export function NativeMediaPlayer({
     }
 
     async function open() {
+      onBackendResolved(undefined)
       setLoading(true)
       setError('')
       setFit('fit')
@@ -137,6 +147,7 @@ export function NativeMediaPlayer({
       try {
         const controller = await attachVideo(element, {
           source,
+          backend,
           autoplay: false,
           deviceProfile: 'auto',
           signal: abort.signal,
@@ -157,6 +168,9 @@ export function NativeMediaPlayer({
         }
         controllerRef.current = controller
         onController(controller)
+        void controller.stats().then((stats) => {
+          if (!cancelled) onBackendResolved(stats.hardwareBackend)
+        }).catch(() => undefined)
         controller.addEventListener('timeupdate', refresh)
         controller.addEventListener('bufferprogress', refresh)
         controller.addEventListener('trackchange', refresh)
@@ -187,6 +201,8 @@ export function NativeMediaPlayer({
     return () => {
       cancelled = true
       abort.abort()
+      persistAudio()
+      element.removeEventListener('volumechange', persistAudio)
       if (interval !== undefined) window.clearInterval(interval)
       const controller = controllerRef.current
       controllerRef.current = null
@@ -199,7 +215,7 @@ export function NativeMediaPlayer({
         void controller.destroy()
       }
     }
-  }, [sourceKey, reloadKey])
+  }, [sourceKey, backend, reloadKey])
 
   async function selectTrack(kind: 'audio' | 'subtitle', trackId?: string) {
     await controllerRef.current?.selectTrack(kind, trackId || undefined)
@@ -244,11 +260,6 @@ export function NativeMediaPlayer({
           <MediaFullscreenButton mediaIsFullscreen={fullscreen} />
         </MediaControlBar>
       </MediaController>
-
-      <div className="html-overlay" aria-hidden="true">
-        <img src="/overlay-badge.svg" alt="" />
-        <span>HTML overlay</span>
-      </div>
 
       {error && (
         <div className="player-error" role="alert">
@@ -311,4 +322,31 @@ function formatCodec(codec: string) {
     .replace(/^(video|audio|text)\/x-/, '')
     .replace(/^(video|audio|text)\//, '')
     .toUpperCase()
+}
+
+function restoreAudioState(element: HTMLVideoElement) {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(AUDIO_STATE_KEY) ?? 'null') as {
+      muted?: unknown
+      volume?: unknown
+    } | null
+    if (!value) return
+    if (typeof value.volume === 'number' && Number.isFinite(value.volume)) {
+      element.volume = Math.min(1, Math.max(0, value.volume))
+    }
+    if (typeof value.muted === 'boolean') element.muted = value.muted
+  } catch {
+    // Playback must remain available when storage is disabled or malformed.
+  }
+}
+
+function saveAudioState(element: HTMLVideoElement) {
+  try {
+    window.localStorage.setItem(AUDIO_STATE_KEY, JSON.stringify({
+      muted: element.muted,
+      volume: element.volume,
+    }))
+  } catch {
+    // Audio controls still work when persistence is unavailable.
+  }
 }

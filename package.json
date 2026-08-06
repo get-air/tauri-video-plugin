@@ -11,7 +11,7 @@
   "homepage": "https://github.com/vynxc/tauri-video-plugin#readme",
   "bugs": "https://github.com/vynxc/tauri-video-plugin/issues",
   "sideEffects": false,
-  "keywords": ["tauri", "video", "gstreamer", "mkv", "android-tv"],
+  "keywords": ["tauri", "video", "gstreamer", "mpv", "libvlc", "mkv", "android-tv"],
   "engines": { "node": ">=20" },
   "type": "module",
   "types": "./dist-js/index.d.ts",
@@ -37,6 +37,7 @@
   },
   "files": [
     "dist-js",
+    "docs/*.md",
     "react/player.css",
     "README.md"
   ],

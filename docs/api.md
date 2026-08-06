@@ -31,6 +31,7 @@ interface VideoSource {
 ```ts
 interface AttachVideoOptions {
   source: string | VideoSource
+  backend?: 'auto' | 'media3' | 'libvlc' | 'gstreamer' | 'mpv'
   autoplay?: boolean
   bufferAheadSeconds?: number
   transcodePolicy?: 'realtime' | 'preserve-quality' | 'hardware-only'
@@ -39,6 +40,16 @@ interface AttachVideoOptions {
   platform?: PlatformPlaybackOptions
   signal?: AbortSignal
 }
+```
+
+`backend` is an explicit native-engine request. `auto` is the default and keeps
+the optimized platform path: GStreamer on Linux and Media3 on Android/TV. An
+explicit backend never silently falls into the WebView compatibility pipeline;
+an unavailable or uncompiled backend rejects with a useful error.
+
+```ts
+await attachVideo(video, { source: url, backend: 'mpv' })    // Linux
+await attachVideo(video, { source: url, backend: 'libvlc' }) // Android / TV
 ```
 
 `bufferAheadSeconds` controls the compatibility broker. Native Android tuning lives under `platform.android` and `platform.androidTv`:
@@ -60,7 +71,7 @@ interface AndroidPlaybackOptions {
 }
 ```
 
-TV values merge over Android values. Media3/MediaCodec remains the first-choice hardware path. Unless disabled, LibVLC takes over on the same direct Android surface when Media3 has no usable video track, selects a non-native format, reports a decoder error, or fails to render before the startup deadline. Unsupported/omitted fields keep native defaults.
+TV values merge over Android values. Media3/MediaCodec remains the first-choice hardware path. Unless disabled, LibVLC takes over on the same direct Android surface when Media3 has no usable video track, selects a non-native format, reports a decoder error, or fails to render before the startup deadline. Setting `backend: 'media3'` disables that compatibility handoff; setting `backend: 'libvlc'` starts LibVLC directly. Unsupported/omitted fields keep native defaults.
 
 ## Controller
 

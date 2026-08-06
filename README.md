@@ -34,11 +34,13 @@ flowchart LR
   C --> D{"Platform"}
   D -->|Android / TV fast path| E["Media3 → MediaCodec → SurfaceView"]
   D -->|Android compatibility| I["LibVLC → SurfaceView"]
-  D -->|Linux| F["GStreamer → VA-API / GL"]
+  D -->|Linux default| F["GStreamer → VA-API / GL"]
+  D -->|Linux optional| J["libmpv → OpenGL"]
   D -->|Windows| G["Compatibility path"]
   E --> H["Native video surface"]
   I --> H
   F --> H
+  J --> H
   G --> H
   A -. "DOM overlays stay above the surface" .-> H
 ```
@@ -50,6 +52,13 @@ The npm and crates.io packages are not published yet. After the first release:
 ```sh
 npm install tauri-plugin-video-api
 cargo add tauri-plugin-video
+```
+
+GStreamer remains the Linux default. To compile the optional libmpv backend,
+install your distribution's libmpv development package and enable the feature:
+
+```toml
+tauri-plugin-video = { version = "0.1", features = ["mpv-runtime"] }
 ```
 
 Register the Rust plugin and add `video:default` to your Tauri capability:
@@ -77,6 +86,8 @@ export function Player({ url }: { url: string }) {
 
 Size and position it with ordinary CSS. Children are ordinary DOM and render above the native video.
 
+On Linux the controller automatically drills and tracks the native-video hole while keeping the rest of the transparent Tauri window opaque; no special wrapper structure or backdrop CSS is required. See [Linux setup](docs/linux.md#opaque-application-background-with-a-transparent-video-hole).
+
 ## Headless API
 
 Bring your own React controls, another component system, or no UI at all:
@@ -85,7 +96,10 @@ Bring your own React controls, another component system, or no UI at all:
 import { attachVideo } from "tauri-plugin-video-api/headless";
 
 const anchor = document.querySelector("video")!;
-const player = await attachVideo(anchor, { source: movieUrl });
+const player = await attachVideo(anchor, {
+  source: movieUrl,
+  backend: "auto", // or "mpv", "gstreamer", "libvlc", "media3"
+});
 
 await player.play();
 await player.seek(60);
@@ -129,11 +143,11 @@ The local Linux capture held the 24 fps source rate with zero dropped frames for
 
 | Platform | Native path | Status |
 | --- | --- | --- |
-| Android / Android TV | Media3/MediaCodec, then LibVLC → `SurfaceView` | Working; 20-format emulator matrix |
-| Linux | GStreamer → VA-API / GL | Working |
+| Android / Android TV | Media3/MediaCodec default; selectable LibVLC → `SurfaceView` | Working; 20-format emulator matrix |
+| Linux | GStreamer default; optional libmpv → GTK OpenGL | Working |
 | Windows | Compatibility pipeline | Native D3D11 presentation remains |
 
-See the [API documentation](docs/api.md), [Android setup](docs/android.md), and [qualification report](qualification/REPORT.md).
+See the [API documentation](docs/api.md), [Linux setup](docs/linux.md), [Android setup](docs/android.md), and [qualification report](qualification/REPORT.md).
 
 Sintel © Blender Foundation, [CC BY 3.0](https://download.blender.org/durian/movies/). Media Chrome is MIT licensed.
 

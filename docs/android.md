@@ -19,6 +19,7 @@ The hidden `<video>` element is still the public layout anchor. The TypeScript c
 ```ts
 await attachVideo(video, {
   source: { uri, headers, cookies, userAgent, referrer },
+  backend: 'auto',
   deviceProfile: 'tv',
   platform: {
     android: {
@@ -35,6 +36,10 @@ await attachVideo(video, {
   },
 })
 ```
+
+Use `backend: 'media3'` to require Media3 without compatibility fallback, or
+`backend: 'libvlc'` to open the stream directly with LibVLC. Both render into
+the same native plane and retain the same headless controller and HTML overlay.
 
 The byte limit is the last guardrail on small TV boxes. Tunneling is opt-in because vendor implementations vary. Dolby Vision profile 7 prefers the HEVC base-layer decoder; a physical-device matrix is still required because emulator HEVC decoders do not expose production 4K/DV capabilities.
 

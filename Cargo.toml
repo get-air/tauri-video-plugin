@@ -36,6 +36,7 @@ gstreamer-runtime = [
   "dep:gstreamer-app",
   "dep:gstreamer-pbutils",
 ]
+mpv-runtime = ["dep:libc", "dep:libmpv2"]
 
 [dependencies]
 axum = { version = "0.8.9", features = ["http1", "json", "tokio"] }
@@ -45,6 +46,8 @@ gstreamer = { version = "0.25.3", optional = true }
 gstreamer-app = { version = "0.25.2", optional = true }
 gstreamer-pbutils = { version = "0.25.2", optional = true }
 parking_lot = "0.12"
+libc = { version = "0.2", optional = true }
+libmpv2 = { version = "5.0.3", default-features = true, optional = true }
 serde = { version = "1.0", features = ["derive"] }
 tauri = { version = "2.11.5" }
 thiserror = "2"

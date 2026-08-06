@@ -17,6 +17,7 @@
       {
         "fullscreen": false,
         "height": 820,
+        "decorations": true,
         "resizable": true,
         "title": "Tauri Video",
         "width": 1180,

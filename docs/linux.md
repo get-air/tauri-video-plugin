@@ -1,0 +1,97 @@
+# Linux runtime
+
+Linux playback uses GStreamer by default and can optionally use libmpv. Both render through a native GTK GPU widget below the transparent WebView. The plugin installs a `GtkOverlay` around Tauri's original window child so the video can follow the HTML anchor while normal DOM controls remain above it. Decoded frames never cross into JavaScript or canvas.
+
+## Optional libmpv backend
+
+Enable `mpv-runtime` and provide the system libmpv development package at build
+time:
+
+```toml
+tauri-plugin-video = { version = "0.1", features = ["mpv-runtime"] }
+```
+
+```ts
+const player = await attachVideo(video, {
+  source: { uri, headers, cookies, userAgent, referrer },
+  backend: 'mpv',
+})
+```
+
+The implementation uses libmpv's render API with `GtkGLArea` and its currently
+bound framebuffer. Frames remain on the native OpenGL path; the plugin does not
+read pixels back into Rust or JavaScript. Render notifications are coalesced in
+a one-item main-context channel so decoder callbacks cannot flood GTK. Position,
+duration, cache end, tracks, selected streams, frame drops, hardware decoder,
+fit, zoom, seeking, and volume are translated into the same controller model as
+GStreamer.
+
+`auto` continues to choose GStreamer when both features are compiled. libmpv is
+an explicit compatibility choice, and requesting it without `mpv-runtime`
+returns an actionable runtime error.
+
+## Tauri 2.11.4 GTK compatibility
+
+`tauri-runtime-wry` 2.11.4 assumes that the WebView's second GTK ancestor is always a `GtkWindow` and uses an infallible downcast in its pointer and touch resize callbacks. A native overlay adds one legitimate ancestor. Compositors and desktop environments differ in which pointer path they deliver, so the bad assumption may remain hidden on one desktop and abort the process on another. COSMIC exposed it while dragging the window; the same defect can be reached on X11 or Wayland through mouse, pen, or touch input.
+
+Tauri fixed the unsafe downcast upstream in [tauri-apps/tauri#15701](https://github.com/tauri-apps/tauri/pull/15701). Until a crates.io release includes that change, host applications using the Linux native surface should patch the coherent Tauri runtime set:
+
+```toml
+[patch.crates-io]
+tauri-runtime = { git = "https://github.com/tauri-apps/tauri.git", rev = "5a882eccfda53a189ec076c79c4ad186f50db5ff" }
+tauri-runtime-wry = { git = "https://github.com/tauri-apps/tauri.git", rev = "5a882eccfda53a189ec076c79c4ad186f50db5ff" }
+tauri-utils = { git = "https://github.com/tauri-apps/tauri.git", rev = "5a882eccfda53a189ec076c79c4ad186f50db5ff" }
+```
+
+Pin all three entries to the same revision. Patching only `tauri-runtime-wry` creates two source-distinct copies of the runtime trait and will not compile.
+
+The example keeps native window decorations enabled. This lets the compositor own window movement and edge resizing even though the WebView has an additional overlay ancestor. Frameless applications should use Tauri's explicit `startDragging()` API for drag regions and qualify resize behavior on both X11 and Wayland.
+
+## Opaque application background with a transparent video hole
+
+The Tauri window itself must be transparent so the GTK video widget can be seen through the WebView. The entire application does not need to look transparent. The controller now drills the hole automatically; the host does not need a particular root component, wrapper class, or backdrop stylesheet.
+
+When native playback starts, the controller:
+
+1. Finds every DOM ancestor between the video anchor and the document root and temporarily makes only their backgrounds transparent.
+2. Inserts four opaque, non-interactive backdrop panels around the video rectangle.
+3. Snaps the hole to the exact integer coordinates sent to GTK or Android, avoiding fractional one-pixel seams.
+4. Restores the original DOM attributes when the owning session closes.
+
+The backdrop color is taken from `--tauri-native-video-backdrop-color` when supplied, otherwise from the computed body/root background, with black as the final fallback. The Linux host also paints an opaque native black layer below both the video widget and WebView. GTK allocates that layer with the window itself, so even a delayed WebKit frame during interactive resize cannot expose the desktop behind the application.
+
+Layout changes use a two-phase commit. The plugin moves the native surface first and publishes the matching WebView aperture only after the native command succeeds. Rapid scrolling and resizing may briefly retain the previous aligned frame, but they cannot open a hole at coordinates where the native video has not arrived.
+
+The Linux player also keeps one `gtkglsink`, GL context, and GTK widget alive for the application lifetime. Closing a controller parks the pipeline in `READY`; opening another source reconfigures that same pipeline only after it reaches `READY`. This releases the old stream and decoders without destroying a GPU widget that GDK may still be drawing, and it prevents stale position, track, and bus data from leaking into the replacement controller.
+
+The controller still adds `tauri-native-video` to the root and publishes the snapped bounds for applications that want additional effects:
+
+- `--tauri-native-video-left`
+- `--tauri-native-video-top`
+- `--tauri-native-video-right`
+- `--tauri-native-video-bottom`
+- `--tauri-native-video-width`
+- `--tauri-native-video-height`
+
+An application may override only the backdrop color if desired:
+
+```css
+:root {
+  --tauri-native-video-backdrop-color: #070707;
+}
+```
+
+CSS controls and overlays remain above the native surface and backdrop. Session ownership prevents cleanup from an old React controller from restoring backgrounds or removing coordinates owned by its replacement.
+
+## Desktop acceptance test
+
+With video actively playing, verify all of the following:
+
+1. Drag the decorated window from each edge and title bar.
+2. Resize from every edge and corner while the video surface follows its HTML anchor; newly exposed window area must be black rather than transparent.
+3. Enter and leave fullscreen while controls and arbitrary HTML remain above the video.
+4. Scroll the document and confirm the native surface remains aligned with the anchor.
+5. Repeat with mouse and touch input when available.
+6. Repeat on an X11 session and a Wayland session; the process must not panic or abort.
+
+The fix is compositor-independent: unexpected GTK ancestry becomes a normal non-resize event instead of an infallible cast. Desktop-specific testing is still useful for placement, scaling, and input routing.

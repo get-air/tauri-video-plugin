@@ -1,6 +1,6 @@
 import { type FormEvent, useMemo, useState } from 'react'
 
-import type { MediaTrack, VideoController, VideoSource } from 'tauri-plugin-video-api'
+import type { MediaTrack, VideoBackend, VideoController, VideoSource } from 'tauri-plugin-video-api'
 import { TvVideoPlayer } from 'tauri-plugin-video-api/react'
 
 import { NativeMediaPlayer, type PlayerTelemetry } from './NativeMediaPlayer'
@@ -10,6 +10,9 @@ const params = new URLSearchParams(window.location.search)
 const configuredSource = params.get('source') ?? import.meta.env.VITE_VIDEO_SOURCE
 const caFile = params.get('ca') ?? import.meta.env.VITE_VIDEO_CA_FILE
 const tvMode = params.get('tv') === '1' || import.meta.env.VITE_VIDEO_TV === '1'
+const initialBackend = (
+  params.get('backend') ?? import.meta.env.VITE_VIDEO_BACKEND ?? 'auto'
+) as VideoBackend
 const defaultUri = configuredSource ?? DEFAULT_SOURCE.uri
 
 declare global {
@@ -52,6 +55,8 @@ export default function App() {
   const [input, setInput] = useState(defaultUri)
   const [source, setSource] = useState(defaultUri)
   const [reloadKey, setReloadKey] = useState(0)
+  const [requestedBackend, setRequestedBackend] = useState<VideoBackend>(initialBackend)
+  const [activeBackend, setActiveBackend] = useState<string>()
   const [controller, setController] = useState<VideoController | null>(null)
   const [telemetry, setTelemetry] = useState(EMPTY_TELEMETRY)
   const [error, setError] = useState('')
@@ -75,6 +80,16 @@ export default function App() {
     event.preventDefault()
     const next = input.trim()
     if (next) load(next)
+  }
+
+  function changeBackend(nextBackend: VideoBackend) {
+    setActiveBackend(undefined)
+    setRequestedBackend(nextBackend)
+
+    const url = new URL(window.location.href)
+    if (nextBackend === 'auto') url.searchParams.delete('backend')
+    else url.searchParams.set('backend', nextBackend)
+    window.history.replaceState(null, '', url)
   }
 
   function expose(nextController: VideoController | null) {
@@ -116,6 +131,7 @@ export default function App() {
           onController={expose}
           onError={(reason) => setError(reason.message)}
           options={{
+            backend: requestedBackend,
             bufferAheadSeconds: 20,
             platform: {
               androidTv: {
@@ -134,6 +150,7 @@ export default function App() {
   const videoTrack = telemetry.media.tracks.find((track) => track.kind === 'video' && track.selected)
   const audioTrack = telemetry.media.tracks.find((track) => track.kind === 'audio' && track.selected)
   const hardware = controller?.sessionId.includes('native') ? 'Native surface' : 'Compatibility path'
+  const backendName = formatBackend(activeBackend, requestedBackend)
   const container = telemetry.media.container && telemetry.media.container !== 'unknown'
     ? telemetry.media.container
     : selectedDemo?.format || 'Discovering'
@@ -145,7 +162,22 @@ export default function App() {
           <span className="brand-mark">TV</span>
           <span><strong>Tauri Video</strong><small>native stream lab</small></span>
         </a>
-        <div className="pipeline-status"><span />{hardware}</div>
+        <div className="header-actions">
+          <label className="backend-picker">
+            <span>Backend</span>
+            <select
+              value={requestedBackend}
+              onChange={(event) => changeBackend(event.currentTarget.value as VideoBackend)}
+            >
+              <option value="auto">Auto</option>
+              <option value="gstreamer">GStreamer</option>
+              <option value="mpv">mpv</option>
+            </select>
+          </label>
+          <div className="pipeline-status" title={activeBackend ?? 'Resolving playback backend'}>
+            <span />{backendName} · {hardware}
+          </div>
+        </div>
       </header>
 
       <section className="workspace">
@@ -164,9 +196,11 @@ export default function App() {
 
           <NativeMediaPlayer
             source={sourceValue}
+            backend={requestedBackend}
             reloadKey={reloadKey}
             title={selectedDemo?.title ?? 'Custom video stream'}
             onController={expose}
+            onBackendResolved={setActiveBackend}
             onTelemetry={setTelemetry}
             onError={(reason) => setError(reason.message)}
           />
@@ -241,4 +275,14 @@ function formatCodec(codec?: string) {
     .replace(/^(video|audio|text)\/x-/, '')
     .replace(/^(video|audio|text)\//, '')
     .toUpperCase()
+}
+
+function formatBackend(active: string | undefined, requested: VideoBackend) {
+  const value = active?.toLowerCase()
+  if (value?.startsWith('mpv')) return 'mpv'
+  if (value?.includes('gstreamer') || value?.includes('gst')) return 'GStreamer'
+  if (value?.includes('libvlc') || value?.includes('vlc')) return 'LibVLC'
+  if (value?.includes('media3') || value?.includes('mediacodec')) return 'Media3'
+  if (requested === 'auto') return 'Resolving'
+  return requested === 'gstreamer' ? 'GStreamer' : requested === 'libvlc' ? 'LibVLC' : requested
 }
