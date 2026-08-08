@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Native aperture compositor fixture</title>
+    <link rel="stylesheet" href="/qualification/compositor-fixture.css" />
+  </head>
+  <body>
+    <div id="native-simulation" aria-hidden="true"></div>
+    <header class="site-header">
+      <strong>Existing application</strong>
+      <span>No player-specific page styles</span>
+    </header>
+    <main class="application-shell">
+      <aside class="sidebar">
+        <h1>Library</h1>
+        <p>This page is intentionally full of opaque and gradient surfaces.</p>
+      </aside>
+      <section class="content-column">
+        <nav id="external-controls" class="external-controls" aria-label="External video controls">
+          <button type="button">Pause</button>
+          <button type="button">Subtitles</button>
+          <output>Controls mounted outside the player</output>
+        </nav>
+        <div class="nested-scroller">
+          <div class="before-player">Scrollable content before the player</div>
+          <article class="player-card">
+            <div class="player-frame">
+              <video id="video-anchor" aria-label="Native video anchor"></video>
+              <div class="overlay-badge">HTML overlay</div>
+            </div>
+          </article>
+          <div class="after-player">Scrollable content after the player</div>
+        </div>
+      </section>
+    </main>
+    <div id="unrelated-overlay" class="unrelated-overlay">
+      Unrelated opaque page content crossing the player
+    </div>
+    <script type="module" src="/qualification/compositor-fixture.ts"></script>
+  </body>
+</html>

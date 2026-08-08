@@ -297,6 +297,14 @@ mod linux_surface {
                 app.webview_windows().into_values().next().ok_or_else(|| {
                     Error::Pipeline("no Tauri webview window is available".into())
                 })?;
+            // Native video is a sibling below WebKit, so only the WebView's
+            // backing layer must be transparent. Do this at runtime instead of
+            // requiring every consuming app to opt its whole OS window into
+            // transparency in tauri.conf.json.
+            window
+                .as_ref()
+                .set_background_color(Some(tauri::webview::Color(0, 0, 0, 0)))
+                .map_err(|error| Error::Pipeline(error.to_string()))?;
             let gtk_window = window
                 .gtk_window()
                 .map_err(|error| Error::Pipeline(error.to_string()))?;

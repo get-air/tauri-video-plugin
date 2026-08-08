@@ -63,6 +63,22 @@ The APK build verifies that the bundled CA asset is staged even when only `TAURI
 
 ## Performance samples
 
+On 2026-08-08, the desktop aperture fixture was also exercised in Firefox
+153.0.3 against nested overflow clipping, rounded corners, gradient ancestor
+backgrounds, an external control toolbar, an HTML overlay, and an unrelated
+fixed opaque branch crossing the native rectangle. Pixel probes confirmed that
+the crossing branch remained visible outside the aperture and was masked inside
+it. After a 210 px nested scroll, the DOM anchor and simulated native surface
+both reported `y = 248`, and the published clipped aperture was
+`361,248`–`1237,682`.
+
+The steady-state compositor loop completed 1,000 measure/commit iterations in
+36 ms (0.036 ms per iteration) with zero CSS property writes after the first
+commit. A deliberately adversarial synchronous scroll loop, which alternated
+the nested scroll position and forced layout on every iteration, completed 240
+updates in 186 ms (0.775 ms per update). These are local regression measurements,
+not general device performance claims.
+
 The Android TV MediaCodec soak ran for 20 seconds at 29.91 average presented FPS for a 30 FPS source, with 0 dropped frames, 29.33 minimum sampled FPS, 234.6 MiB maximum process PSS, 26.8 MiB maximum encoded-buffer allocation, and at least 23.1 seconds of reserve.
 
 The Android TV explicit LibVLC soak ran for 20 seconds at 24.43 average presented FPS for a 24 FPS source, advanced 20.14 seconds, and reported 0 dropped frames. Maximum PSS was 277.1 MiB and minimum estimated reserve was 7.8 seconds. One instantaneous FPS sample fell to 14.0 because the counter is sampled over short asynchronous windows. Average cadence and the zero-drop counter were healthy, but the saved run is correctly marked failed against its strict 18 FPS minimum-sample threshold.
@@ -74,6 +90,7 @@ In the full constrained-phone matrix, the hardest LibVLC fixtures incurred one o
 ## Automated checks
 
 - TypeScript ESM/CJS builds and declaration emit: passed.
+- Firefox complex-DOM aperture, external-controls, and nested-scroll fixture: passed.
 - TypeScript declaration checking, Vitest, and npm publish dry-run: passed.
 - Rust tests and Clippy with warnings denied: passed.
 - Android Kotlin compilation with Java 17: passed.

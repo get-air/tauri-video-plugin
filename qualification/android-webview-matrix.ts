@@ -1,13 +1,33 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S npx tsx
 
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { ChromeRuntime, commandOptions, delay } from './chrome-devtools'
 
-const options = Object.fromEntries(process.argv.slice(2).map((argument) => {
-  const [key, ...value] = argument.replace(/^--/, '').split('=')
-  return [key, value.join('=')]
-}))
+interface MatrixSample {
+  currentTime: number
+  duration: number
+  paused: boolean
+  readyState: number
+  state: string
+  backend: string
+  error: string
+  fpsBadge: string
+  totalVideoFrames: number
+  droppedVideoFrames: number
+  buffered: number[][]
+  trackOptions: string[][]
+}
+
+interface MatrixResult extends MatrixSample {
+  name: string
+  url: string
+  passed: boolean
+  elapsedMs: number
+}
+
+const options = commandOptions()
 const adb = options.adb ?? 'adb'
 const serial = options.serial ?? 'emulator-5554'
 const baseUrl = options.base ?? 'https://10.0.2.2:9443'
@@ -47,41 +67,9 @@ if (cases.length === 0) throw new Error('No requested matrix cases matched')
 mkdirSync(join(artifactRoot, platform), { recursive: true })
 mkdirSync(join(artifactRoot, 'logs'), { recursive: true })
 
-const targets = await (await fetch('http://127.0.0.1:9222/json')).json()
-if (!targets[0]?.webSocketDebuggerUrl) throw new Error('Android WebView DevTools target is unavailable')
-const socket = new WebSocket(targets[0].webSocketDebuggerUrl)
-await new Promise((resolve, reject) => {
-  socket.onopen = resolve
-  socket.onerror = reject
-})
-let nextId = 0
-const pending = new Map()
-socket.onmessage = (event) => {
-  const message = JSON.parse(event.data)
-  pending.get(message.id)?.(message)
-  pending.delete(message.id)
-}
-
-function evaluate(expression) {
-  return new Promise((resolve, reject) => {
-    const id = ++nextId
-    pending.set(id, (message) => {
-      if (message.result.exceptionDetails) {
-        const details = message.result.exceptionDetails
-        reject(new Error(details.exception?.description ?? details.text ?? JSON.stringify(details)))
-      }
-      else resolve(message.result.result.value)
-    })
-    socket.send(JSON.stringify({
-      id,
-      method: 'Runtime.evaluate',
-      params: { expression, returnByValue: true, awaitPromise: true },
-    }))
-  })
-}
-
-const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
-const results = []
+const runtime = await ChromeRuntime.connect()
+const evaluate = <T>(expression: string): Promise<T> => runtime.evaluate<T>(expression)
+const results: MatrixResult[] = []
 const browserSample = `(async () => {
   const bridge = window.__TAURI_VIDEO_TEST__;
   if (!bridge?.controller) {
@@ -108,9 +96,24 @@ const browserSample = `(async () => {
   };
 })()`
 
+const EMPTY_MATRIX_SAMPLE: MatrixSample = {
+  currentTime: 0,
+  duration: 0,
+  paused: true,
+  readyState: 0,
+  state: 'opening',
+  backend: '',
+  error: '',
+  fpsBadge: '',
+  totalVideoFrames: 0,
+  droppedVideoFrames: 0,
+  buffered: [],
+  trackOptions: [],
+}
+
 for (const [name, filename] of cases) {
   const url = `${baseUrl}/${filename}`
-  await evaluate(`(() => {
+  await evaluate<boolean>(`(() => {
     const bridge = window.__TAURI_VIDEO_TEST__;
     if (bridge?.loadSource) {
       bridge.loadSource(${JSON.stringify(url)});
@@ -127,10 +130,10 @@ for (const [name, filename] of cases) {
   })()`)
 
   const started = Date.now()
-  let sample
+  let sample: MatrixSample | undefined
   while (Date.now() - started < timeoutMs) {
     await delay(1_000)
-    sample = await evaluate(browserSample)
+    sample = await evaluate<MatrixSample>(browserSample)
     if (sample.error || (sample.currentTime >= 1 && !sample.paused)) break
   }
 
@@ -139,7 +142,7 @@ for (const [name, filename] of cases) {
   if (passed) {
     execFileSync(adb, ['-s', serial, 'shell', 'dumpsys', 'gfxinfo', 'io.github.taurivideo.signalbench', 'reset'])
     await delay(4_000)
-    sample = await evaluate(browserSample)
+    sample = await evaluate<MatrixSample>(browserSample)
     passed = Boolean(!sample.error && sample.currentTime >= 1 && sample.totalVideoFrames > 0)
   }
 
@@ -149,12 +152,18 @@ for (const [name, filename] of cases) {
     '-s', serial, 'shell', 'dumpsys', 'gfxinfo', 'io.github.taurivideo.signalbench', 'framestats',
   ])
   writeFileSync(join(artifactRoot, 'logs', `${platform}-matrix-${name}-gfxinfo.txt`), gfxInfo)
-  const result = { name, url, passed, elapsedMs: Date.now() - started, ...sample }
+  const result: MatrixResult = {
+    name,
+    url,
+    passed,
+    elapsedMs: Date.now() - started,
+    ...(sample ?? EMPTY_MATRIX_SAMPLE),
+  }
   results.push(result)
   process.stdout.write(`${JSON.stringify(result)}\n`)
 }
 
-socket.close()
+runtime.close()
 writeFileSync(
   join(artifactRoot, 'logs', `${platform}-matrix.json`),
   `${JSON.stringify(results, null, 2)}\n`,

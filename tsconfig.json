@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "target": "es2021",
+    "target": "es2022",
     "module": "esnext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
@@ -10,6 +10,12 @@
     "noImplicitAny": true,
     "noEmit": true
   },
-  "include": ["guest-js/index.ts", "react/**/*.tsx"],
-  "exclude": ["dist-js", "node_modules", "guest-js/*.test.ts"]
+  "include": [
+    "guest-js/**/*.ts",
+    "react/**/*",
+    "scripts/**/*.ts",
+    "qualification/**/*.ts",
+    "rollup.config.ts"
+  ],
+  "exclude": ["dist-js", "node_modules", "guest-js/*.test.ts", "qualification/fixtures"]
 }

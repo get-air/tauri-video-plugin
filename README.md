@@ -44,6 +44,7 @@ const anchor = document.querySelector('video')!
 const player = await attachVideo(anchor, {
   source: movieUrl,
   backend: 'auto',
+  controlRegions: document.querySelectorAll('[data-player-ui]'),
 })
 
 await player.play()
@@ -52,7 +53,12 @@ await player.seek(60)
 
 The `<video>` is a layout/API anchor. The controller mirrors standard media
 state and events onto it while synchronizing the native surface to its CSS box.
-Ordinary HTML controls and overlays remain above the native video.
+No page, root, or player wrapper needs a transparent background: the package
+opens and maintains the exact aperture automatically, including nested scrolling
+clips. Mark HTML that is intentionally allowed over the video through
+`controlRegions`, `controller.registerControls()`, or
+`data-tauri-video-controls`. Unrelated page content is cut out only where it
+crosses the aperture.
 
 For an explicit alternative:
 
@@ -65,12 +71,16 @@ await attachVideo(anchor, { source: movieUrl, backend: 'libvlc' }) // Android
 
 ```tsx
 import { VideoPlayer } from 'tauri-plugin-video-api/react'
-import 'tauri-plugin-video-api/react/styles.css'
 
 export function Player({ url }: { url: string }) {
-  return <VideoPlayer source={url} autoPlay />
+  return <VideoPlayer source={url} autoPlay style={{ aspectRatio: '16 / 9' }} />
 }
 ```
+
+The React entry installs its scoped player styles automatically. Use
+`VideoControlRegion` or `useVideoControlRegion()` for controls mounted elsewhere
+in the page, such as a portal or application toolbar. The headless equivalent is
+`controller.registerControls(element)`.
 
 See [API](docs/api.md), [Linux](docs/linux.md), and [Android](docs/android.md).
 

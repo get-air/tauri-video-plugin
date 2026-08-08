@@ -1,13 +1,36 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S npx tsx
 
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { ChromeRuntime, commandOptions, delay } from './chrome-devtools'
 
-const options = Object.fromEntries(process.argv.slice(2).map((argument) => {
-  const [key, ...value] = argument.replace(/^--/, '').split('=')
-  return [key, value.join('=')]
-}))
+interface NativeTrack { id: string; kind: string; selected: boolean }
+
+interface NativeControlSample {
+  label: string
+  currentTime: number
+  duration: number
+  paused: boolean
+  volume: number
+  state: string
+  backend: string
+  encodedBytesBuffered: number
+  error: string
+  fps: number
+  totalVideoFrames: number
+  droppedVideoFrames: number
+  bufferedAhead: number
+  tracks: NativeTrack[]
+  focused: string
+  zoomValue: string
+  fullscreenPresent: boolean
+  fullscreenActive: boolean
+}
+
+interface ScrollProbe { before: number; after: number }
+
+const options = commandOptions()
 const adb = options.adb ?? 'adb'
 const serial = options.serial ?? 'emulator-5554'
 const platform = options.platform ?? 'android-phone-native'
@@ -20,43 +43,11 @@ const logDirectory = join(artifactRoot, 'logs')
 mkdirSync(outputDirectory, { recursive: true })
 mkdirSync(logDirectory, { recursive: true })
 
-const targets = await (await fetch('http://127.0.0.1:9222/json')).json()
-if (!targets[0]?.webSocketDebuggerUrl) throw new Error('Android WebView DevTools target is unavailable')
-const socket = new WebSocket(targets[0].webSocketDebuggerUrl)
-await new Promise((resolve, reject) => {
-  socket.onopen = resolve
-  socket.onerror = reject
-})
-let nextId = 0
-const pending = new Map()
-socket.onmessage = (event) => {
-  const message = JSON.parse(event.data)
-  pending.get(message.id)?.(message)
-  pending.delete(message.id)
-}
+const runtime = await ChromeRuntime.connect()
+const evaluate = <T>(expression: string): Promise<T> => runtime.evaluate<T>(expression, true)
 
-function evaluate(expression) {
-  return new Promise((resolve, reject) => {
-    const id = ++nextId
-    pending.set(id, (message) => {
-      if (message.result.exceptionDetails) {
-        const details = message.result.exceptionDetails
-        reject(new Error(details.exception?.description ?? details.text ?? JSON.stringify(details)))
-      }
-      else resolve(message.result.result.value)
-    })
-    socket.send(JSON.stringify({
-      id,
-      method: 'Runtime.evaluate',
-      params: { expression, returnByValue: true, awaitPromise: true, userGesture: true },
-    }))
-  })
-}
-
-const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
-
-async function sample(label) {
-  const result = await evaluate(`(async () => {
+async function sample(label: string): Promise<NativeControlSample> {
+  const result = await evaluate<NativeControlSample>(`(async () => {
     const bridge = window.__TAURI_VIDEO_TEST__;
     const snapshot = bridge?.snapshot();
     const stats = bridge?.controller ? await bridge.controller.stats() : null;
@@ -87,9 +78,12 @@ async function sample(label) {
   return result
 }
 
-async function waitFor(predicate, timeoutMs = 40_000) {
+async function waitFor(
+  predicate: (sample: NativeControlSample) => boolean,
+  timeoutMs = 40_000,
+): Promise<NativeControlSample> {
   const started = Date.now()
-  let value
+  let value: NativeControlSample | undefined
   while (Date.now() - started < timeoutMs) {
     await delay(500)
     value = await sample('poll')
@@ -99,13 +93,13 @@ async function waitFor(predicate, timeoutMs = 40_000) {
   throw new Error(`Timed out after ${timeoutMs}ms; last sample: ${JSON.stringify(value)}`)
 }
 
-function screenshot(name) {
+function screenshot(name: string): void {
   const image = execFileSync(adb, ['-s', serial, 'exec-out', 'screencap', '-p'])
   writeFileSync(join(outputDirectory, `controls-${name}.png`), image)
 }
 
 if (!alreadyLoaded) {
-  await evaluate(`(() => {
+  await evaluate<boolean>(`(() => {
     const bridge = window.__TAURI_VIDEO_TEST__;
     if (bridge?.loadSource) { bridge.loadSource(${JSON.stringify(source)}); return true; }
     const input = document.querySelector('#source-url');
@@ -125,7 +119,7 @@ const beforeAudio = await sample('before-audio')
 let audio = beforeAudio
 let subtitle = beforeAudio
 if (!skipTracks) {
-  await evaluate(`(() => {
+  await evaluate<void>(`(() => {
     const bridge = window.__TAURI_VIDEO_TEST__;
     const tracks = bridge.snapshot().tracks.filter(track => track.kind === 'audio');
     return bridge.selectTrack('audio', tracks[1].id);
@@ -136,7 +130,7 @@ if (!skipTracks) {
   ))
   screenshot('02-audio-track')
 
-  await evaluate(`(() => {
+  await evaluate<void>(`(() => {
     const bridge = window.__TAURI_VIDEO_TEST__;
     const track = bridge.snapshot().tracks.find(track => track.kind === 'subtitle');
     return bridge.selectTrack('subtitle', track.id);
@@ -148,17 +142,17 @@ if (!skipTracks) {
   screenshot('03-subtitle-overlay')
 }
 
-await evaluate(`window.__TAURI_VIDEO_TEST__.seek(13)`)
+await evaluate<void>(`window.__TAURI_VIDEO_TEST__.seek(13)`)
 const seek = await waitFor((value) => value.currentTime >= 13)
 screenshot('04-seek')
 
-await evaluate(`window.__TAURI_VIDEO_TEST__.setVolume(0.35)`)
+await evaluate<void>(`window.__TAURI_VIDEO_TEST__.setVolume(0.35)`)
 const volume = await waitFor((value) => Math.abs(value.volume - 0.35) < 0.01)
 screenshot('05-volume')
 
 let zoom = { zoomValue: '', fullscreenPresent: true }
 if (platform.includes('tv')) {
-  await evaluate(`(() => {
+  await evaluate<boolean>(`(() => {
     const select = document.querySelector('.zoom-control select');
     select.value = '1.1';
     select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -169,7 +163,7 @@ if (platform.includes('tv')) {
   screenshot('06-zoom')
 }
 
-let dpad = { focused: '' }
+let dpad = { focused: '', currentTime: 0 }
 if (platform.includes('tv')) {
   execFileSync(adb, ['-s', serial, 'shell', 'input', 'keyevent', 'KEYCODE_DPAD_RIGHT'])
   await delay(250)
@@ -179,15 +173,15 @@ if (platform.includes('tv')) {
 
 let fullscreen = { fullscreenActive: false }
 if (!platform.includes('tv')) {
-  await evaluate(`document.querySelector('media-fullscreen-button')?.click()`)
+  await evaluate<void>(`document.querySelector('media-fullscreen-button')?.click()`)
   await delay(750)
   fullscreen = await sample('fullscreen')
   screenshot('06-fullscreen-overlay')
-  await evaluate(`document.querySelector('media-fullscreen-button')?.click()`)
+  await evaluate<void>(`document.querySelector('media-fullscreen-button')?.click()`)
   await delay(500)
 }
 
-const scrollProbe = await evaluate(`(async () => {
+const scrollProbe = await evaluate<ScrollProbe>(`(async () => {
   const player = document.querySelector('.native-player');
   const before = player.getBoundingClientRect().top;
   window.scrollBy(0, 160);
@@ -196,9 +190,9 @@ const scrollProbe = await evaluate(`(async () => {
   return { before, after };
 })()`)
 screenshot('08-scrolled-surface')
-await evaluate(`window.scrollTo(0, 0)`)
+await evaluate<void>(`window.scrollTo(0, 0)`)
 
-const overlayVisible = await evaluate(`(() => {
+const overlayVisible = await evaluate<boolean>(`(() => {
   const overlay = document.querySelector('.html-overlay');
   const badge = overlay?.querySelector('img');
   return getComputedStyle(overlay).pointerEvents === 'none'
@@ -241,5 +235,5 @@ const gfxInfo = execFileSync(adb, [
 ])
 writeFileSync(join(logDirectory, `${platform}-native-controls-gfxinfo.txt`), gfxInfo)
 process.stdout.write(`${JSON.stringify({ report: report.passed, assertions })}\n`)
-socket.close()
+runtime.close()
 if (!report.passed) process.exitCode = 1

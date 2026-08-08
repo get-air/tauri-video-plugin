@@ -1,0 +1,72 @@
+:root {
+  color: #f4f2ff;
+  background: radial-gradient(circle at 20% 0%, #382c68, #11101a 55%);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+body { min-height: 140vh; margin: 0; background: linear-gradient(145deg, #171321, #0d0c13); }
+button { padding: .7rem 1rem; color: inherit; background: #493991; border: 1px solid #7461cf; border-radius: .65rem; }
+
+#native-simulation {
+  position: fixed;
+  z-index: -2147483648;
+  background:
+    linear-gradient(135deg, transparent 45%, rgb(255 255 255 / 18%) 45% 55%, transparent 55%),
+    linear-gradient(115deg, #126a8d, #6b2f89 55%, #d2673e);
+  background-size: 52px 52px, auto;
+  border-radius: 22px;
+}
+
+.site-header {
+  position: sticky;
+  z-index: 10;
+  top: 0;
+  display: flex;
+  justify-content: space-between;
+  padding: 1rem 2rem;
+  background: rgb(13 12 19 / 94%);
+  border-bottom: 1px solid rgb(255 255 255 / 12%);
+  backdrop-filter: blur(14px);
+}
+
+.application-shell { display: grid; grid-template-columns: 16rem minmax(0, 1fr); min-height: 50rem; }
+.sidebar { padding: 2rem; background: linear-gradient(180deg, #241b3d, #171321); }
+.sidebar p { color: #bdb5d8; line-height: 1.6; }
+.content-column { min-width: 0; padding: 2rem; background-image: radial-gradient(circle at 85% 10%, #30234c, transparent 26rem); }
+.external-controls { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.25rem; padding: .8rem; background: #211a35; border: 1px solid #453769; border-radius: 1rem; }
+.external-controls output { margin-left: auto; color: #bdb5d8; }
+
+.nested-scroller {
+  height: 34rem;
+  padding: 7rem 3rem;
+  overflow: auto;
+  background: linear-gradient(155deg, #35294f, #17131f);
+  border: 5px solid #554472;
+  border-radius: 2rem;
+}
+
+.before-player, .after-player { height: 9rem; color: #bdb5d8; }
+.player-card { padding: 1.25rem; background: linear-gradient(130deg, #8a6ce0, #353059); border-radius: 2rem; box-shadow: 0 1.5rem 4rem #05040899; }
+.player-frame { position: relative; aspect-ratio: 16 / 9; overflow: hidden; background: #050509; border-radius: 1.4rem; }
+#video-anchor { display: block; width: 100%; height: 100%; border-radius: inherit; }
+.overlay-badge { position: absolute; z-index: 4; top: 1rem; left: 1rem; padding: .55rem .75rem; background: #0a0910cc; border-radius: 999px; }
+
+.unrelated-overlay {
+  position: fixed;
+  z-index: 20;
+  top: 27rem;
+  right: 0;
+  width: 34%;
+  padding: 1.25rem;
+  color: white;
+  background: #d51d62e8;
+  font-weight: 800;
+}
+
+@media (max-width: 760px) {
+  .application-shell { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+  .content-column { padding: 1rem; }
+  .nested-scroller { padding: 6rem 1rem; }
+}

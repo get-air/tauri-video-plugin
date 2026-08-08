@@ -1,13 +1,37 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S npx tsx
 
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { ChromeRuntime, commandOptions, delay } from './chrome-devtools'
 
-const options = Object.fromEntries(process.argv.slice(2).map((argument) => {
-  const [key, ...value] = argument.replace(/^--/, '').split('=')
-  return [key, value.join('=')]
-}))
+interface QualitySample {
+  measuredFps: number
+  totalVideoFrames: number
+  droppedVideoFrames: number
+}
+
+interface PlaybackSnapshot {
+  currentTime: number
+  bufferedAhead: number
+  quality: QualitySample
+}
+
+interface PlaybackStats { playing: boolean; encodedBytesBuffered: number }
+interface BrowserSample { snapshot: PlaybackSnapshot; stats: PlaybackStats; error: string }
+interface MemorySample { pssKiB: number; rssKiB: number; nativeHeapKiB: number }
+interface SoakSample extends BrowserSample { elapsedSeconds: number; memory: MemorySample }
+
+interface SoakAssertions {
+  timelineAdvanced: boolean
+  sourceCadenceHeld: boolean
+  zeroDroppedFrames: boolean
+  encodedBufferBounded: boolean
+  processMemoryBounded: boolean
+  noPlaybackError: boolean
+}
+
+const options = commandOptions()
 const adb = options.adb ?? 'adb'
 const serial = options.serial ?? 'emulator-5554'
 const platform = options.platform ?? 'android-native'
@@ -22,42 +46,12 @@ const logDirectory = join(artifactRoot, 'logs')
 mkdirSync(outputDirectory, { recursive: true })
 mkdirSync(logDirectory, { recursive: true })
 
-const targets = await (await fetch('http://127.0.0.1:9222/json')).json()
-if (!targets[0]?.webSocketDebuggerUrl) throw new Error('Android WebView DevTools target is unavailable')
-const socket = new WebSocket(targets[0].webSocketDebuggerUrl)
-await new Promise((resolve, reject) => {
-  socket.onopen = resolve
-  socket.onerror = reject
-})
-let nextId = 0
-const pending = new Map()
-socket.onmessage = (event) => {
-  const message = JSON.parse(event.data)
-  pending.get(message.id)?.(message)
-  pending.delete(message.id)
-}
-function evaluate(expression) {
-  return new Promise((resolve, reject) => {
-    const id = ++nextId
-    pending.set(id, (message) => {
-      if (message.result.exceptionDetails) {
-        const details = message.result.exceptionDetails
-        reject(new Error(details.exception?.description ?? details.text ?? JSON.stringify(details)))
-      }
-      else resolve(message.result.result.value)
-    })
-    socket.send(JSON.stringify({
-      id,
-      method: 'Runtime.evaluate',
-      params: { expression, returnByValue: true, awaitPromise: true, userGesture: true },
-    }))
-  })
-}
-const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+const runtime = await ChromeRuntime.connect()
+const evaluate = <T>(expression: string): Promise<T> => runtime.evaluate<T>(expression, true)
 const packageName = 'io.github.taurivideo.signalbench'
 const pid = execFileSync(adb, ['-s', serial, 'shell', 'pidof', packageName], { encoding: 'utf8' }).trim()
 
-function sourceLabel(value) {
+function sourceLabel(value: string): string {
   try {
     const url = new URL(value)
     return `${url.origin}/…/${url.pathname.split('/').filter(Boolean).at(-1) ?? 'media'}`
@@ -66,7 +60,7 @@ function sourceLabel(value) {
   }
 }
 
-function memory() {
+function memory(): MemorySample {
   const value = execFileSync(adb, ['-s', serial, 'shell', 'dumpsys', 'meminfo', packageName], { encoding: 'utf8' })
   const total = value.match(/TOTAL PSS:\s+(\d+).*TOTAL RSS:\s+(\d+)/)
   const native = value.match(/^\s*Native Heap\s+(\d+)/m)
@@ -77,13 +71,13 @@ function memory() {
   }
 }
 
-function screenshot(name) {
+function screenshot(name: string): void {
   const image = execFileSync(adb, ['-s', serial, 'exec-out', 'screencap', '-p'])
   writeFileSync(join(outputDirectory, `soak-${name}.png`), image)
 }
 
-async function browserSample() {
-  return evaluate(`(async () => {
+async function browserSample(): Promise<BrowserSample | null> {
+  return evaluate<BrowserSample | null>(`(async () => {
     const bridge = window.__TAURI_VIDEO_TEST__;
     if (!bridge?.controller) return null;
     const snapshot = bridge.snapshot();
@@ -93,7 +87,7 @@ async function browserSample() {
 }
 
 if (!alreadyLoaded) {
-  await evaluate(`(() => {
+  await evaluate<boolean>(`(() => {
     const bridge = window.__TAURI_VIDEO_TEST__;
     if (bridge?.loadSource) { bridge.loadSource(${JSON.stringify(source)}); return true; }
     const input = document.querySelector('#source-url');
@@ -107,16 +101,16 @@ if (!alreadyLoaded) {
   })()`)
 }
 
-let ready
+let ready: BrowserSample | null | undefined
 for (let attempt = 0; attempt < 90; attempt += 1) {
   await delay(500)
   ready = await browserSample()
   if (ready?.error) throw new Error(ready.error)
-  if (ready?.snapshot.currentTime >= 1 && ready.stats.playing) break
+  if (ready && ready.snapshot.currentTime >= 1 && ready.stats.playing) break
 }
 if (!ready || ready.snapshot.currentTime < 1) throw new Error('Long-stream playback did not start')
 
-const samples = []
+const samples: SoakSample[] = []
 screenshot('00-start')
 for (let second = 1; second <= seconds; second += 1) {
   await delay(1_000)
@@ -138,8 +132,27 @@ for (let second = 1; second <= seconds; second += 1) {
 screenshot('02-end')
 
 const stable = samples.slice(Math.min(2, samples.length))
-const fps = stable.map((sample) => sample.browser?.fps ?? sample.snapshot.quality.measuredFps)
-const report = {
+const fps = stable.map((sample) => sample.snapshot.quality.measuredFps)
+const report: {
+  platform: string
+  serial: string
+  pid: string
+  source: string
+  seconds: number
+  passed: boolean
+  summary: {
+    startPosition: number
+    endPosition: number
+    averageFps: number
+    minimumFps: number
+    droppedFrames: number
+    maximumPssMiB: number
+    maximumEncodedMiB: number
+    minimumBufferSeconds: number
+  }
+  samples: SoakSample[]
+  assertions?: SoakAssertions
+} = {
   platform,
   serial,
   pid,
@@ -174,5 +187,5 @@ const gfxInfo = execFileSync(adb, [
 ])
 writeFileSync(join(logDirectory, `${platform}-native-soak-gfxinfo.txt`), gfxInfo)
 process.stdout.write(`${JSON.stringify({ passed: report.passed, summary: report.summary, assertions: report.assertions })}\n`)
-socket.close()
+runtime.close()
 if (!report.passed) process.exitCode = 1

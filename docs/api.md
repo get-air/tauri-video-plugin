@@ -14,6 +14,7 @@ interface AttachVideoOptions {
   suspendWhenHidden?: boolean
   deviceProfile?: 'auto' | 'mobile' | 'tv' | 'desktop'
   platform?: PlatformPlaybackOptions
+  controlRegions?: Element | Iterable<Element>
   signal?: AbortSignal
 }
 ```
@@ -81,9 +82,48 @@ interface VideoController extends EventTarget {
   stats(): Promise<SessionStats>
   bufferedAhead(): number
   playbackQuality(): PlaybackQuality
+  registerControls(target: Element | Iterable<Element>): () => void
   destroy(): Promise<void>
 }
 ```
 
 Always call `destroy()` or abort the supplied signal when the owning view
 unmounts.
+
+## Layout, transparency, and controls
+
+The supplied `<video>` is an ordinary layout anchor. It may be placed inside
+grids, flex layouts, positioned cards, and nested scroll containers. When a
+native session opens, the package makes the WebView backing layer transparent,
+temporarily clears the anchor's ancestor backgrounds, and reconstructs those
+backgrounds around the exact native rectangle. Solid colors, gradients,
+background images, padding, borders, viewport clipping, and nested overflow
+clipping are handled without changing the application's authored CSS. Ancestor
+class/style changes and reparenting are observed and repaired automatically.
+
+The compositor also clips unrelated DOM branches only where they cross the
+aperture. This matters for fixed/fullscreen players: an opaque header or old page
+content geometrically behind the player cannot accidentally cover the native
+video. Intentional controls and overlays are exempt. They do not have to overlap
+the video or share its parent, but UI that does cross the video must be registered
+through `controlRegions`, `registerControls()`, or the
+`data-tauri-video-controls` attribute. A toolbar or portal works normally:
+
+```ts
+const player = await attachVideo(document.querySelector('video')!, {
+  source: movieUrl,
+  controlRegions: document.querySelectorAll('.player-overlay'),
+})
+
+const unregister = player.registerControls(document.querySelector('.transport')!)
+// Later: unregister(); await player.destroy()
+```
+
+React's `VideoPlayer` installs its own scoped CSS; importing a separate
+stylesheet is not required. `VideoControlRegion` and `useVideoControlRegion()`
+provide the same control-region marker for UI mounted elsewhere.
+
+The native renderer is rectangular. Border radii and rectangular overflow clips
+are recreated by the compositor, but arbitrary 3D transforms, rotation, pseudo-
+element-only masks, and custom non-rectangular CSS masks on the video anchor
+cannot be reproduced by the platform surface.

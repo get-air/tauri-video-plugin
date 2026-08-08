@@ -109,18 +109,28 @@ Pin all three entries to the same revision. Patching only `tauri-runtime-wry` cr
 
 The example keeps native window decorations enabled. This lets the compositor own window movement and edge resizing even though the WebView has an additional overlay ancestor. Frameless applications should use Tauri's explicit `startDragging()` API for drag regions and qualify resize behavior on both X11 and Wayland.
 
-## Opaque application background with a transparent video hole
+## Opaque application background with an automatic video aperture
 
-The Tauri window itself must be transparent so the GTK video widget can be seen through the WebView. The entire application does not need to look transparent. The controller now drills the hole automatically; the host does not need a particular root component, wrapper class, or backdrop stylesheet.
+The application does not need a transparent page or a transparent Tauri window.
+When the native host starts, the plugin makes WebKit's backing layer transparent
+at runtime while retaining an opaque native black floor inside the GTK window.
+The controller drills only the video aperture; the host does not need a root
+component, wrapper class, backdrop stylesheet, or `"transparent": true` window
+setting.
 
 When native playback starts, the controller:
 
 1. Finds every DOM ancestor between the video anchor and the document root and temporarily makes only their backgrounds transparent.
-2. Inserts four opaque, non-interactive backdrop panels around the video rectangle.
+2. Reconstructs each solid, gradient, or image background in a non-interactive layer around the video rectangle, preserving its original coordinate system.
 3. Snaps the hole to the exact integer coordinates sent to GTK or Android, avoiding fractional one-pixel seams.
-4. Restores the original DOM attributes when the owning session closes.
+4. Intersects the aperture with nested `overflow` scroll/clipping ancestors.
+5. Clips unrelated DOM branches where they cross the aperture while preserving registered controls and overlays.
+6. Observes ancestor style and structure changes and restores the original DOM attributes when the owning session closes.
 
-The backdrop color is taken from `--tauri-native-video-backdrop-color` when supplied, otherwise from the computed body/root background, with black as the final fallback. The Linux host also paints an opaque native black layer below both the video widget and WebView. GTK allocates that layer with the window itself, so even a delayed WebKit frame during interactive resize cannot expose the desktop behind the application.
+The Linux host paints an opaque native black layer below both the video widget
+and WebView. GTK allocates that layer with the window itself, so even a delayed
+WebKit frame during interactive resize cannot expose the desktop behind the
+application.
 
 Layout changes use a two-phase commit. The plugin moves the native surface first and publishes the matching WebView aperture only after the native command succeeds. Rapid scrolling and resizing may briefly retain the previous aligned frame, but they cannot open a hole at coordinates where the native video has not arrived.
 
@@ -134,14 +144,6 @@ The controller still adds `tauri-native-video` to the root and publishes the sna
 - `--tauri-native-video-bottom`
 - `--tauri-native-video-width`
 - `--tauri-native-video-height`
-
-An application may override only the backdrop color if desired:
-
-```css
-:root {
-  --tauri-native-video-backdrop-color: #070707;
-}
-```
 
 CSS controls and overlays remain above the native surface and backdrop. Session ownership prevents cleanup from an old React controller from restoring backgrounds or removing coordinates owned by its replacement.
 

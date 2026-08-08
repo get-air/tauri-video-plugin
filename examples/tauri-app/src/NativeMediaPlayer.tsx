@@ -111,6 +111,7 @@ export function NativeMediaPlayer({
   useEffect(() => {
     const element = videoRef.current
     if (!element) return
+    const videoElement = element
     restoreAudioState(element)
     const persistAudio = () => saveAudioState(element)
     element.addEventListener('volumechange', persistAudio)
@@ -144,11 +145,14 @@ export function NativeMediaPlayer({
       setFit('fit')
       setZoom(1)
       try {
-        const controller = await attachVideo(element, {
+        const controller = await attachVideo(videoElement, {
           source,
           backend,
           autoplay: false,
           deviceProfile: 'auto',
+          controlRegions: playerRef.current?.querySelectorAll(
+            'media-control-bar, media-loading-indicator, .native-trackbar',
+          ),
           signal: abort.signal,
           platform: {
             android: {
@@ -255,7 +259,7 @@ export function NativeMediaPlayer({
       </MediaController>
 
       {error && (
-        <div className="player-error" role="alert">
+        <div className="player-error" role="alert" data-tauri-video-controls="">
           <strong>Couldn’t open this stream</strong>
           <span>{error}</span>
         </div>

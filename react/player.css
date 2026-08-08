@@ -103,7 +103,7 @@
 .tvp-timeline {
   display: block;
   width: 100%;
-  height: 1.25rem;
+  height: 3rem;
   background: transparent;
 }
 
@@ -130,7 +130,7 @@
   display: flex;
   align-items: center;
   gap: .375rem;
-  min-height: 2.75rem;
+  min-height: 3rem;
 }
 
 .tvp-spacer { flex: 1; }
@@ -145,8 +145,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 2.5rem;
-  height: 2.5rem;
+  min-width: 3rem;
+  height: 3rem;
   padding: 0 .625rem;
   color: inherit;
   background: transparent;
@@ -156,7 +156,7 @@
   cursor: pointer;
 }
 
-.tvp-icon { width: 2.5rem; padding: 0; }
+.tvp-icon { width: 3rem; padding: 0; }
 .tvp-icon svg { width: 1.375rem; height: 1.375rem; fill: currentColor; }
 .tvp-icon .tvp-outline { stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; fill: none; }
 .tvp-icon:hover,
@@ -176,7 +176,7 @@
 
 .tvp-volume-group { display: flex; align-items: center; gap: .375rem; }
 .tvp-volume-icon { width: 1.25rem; height: 1.25rem; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.tvp-volume { width: 5.25rem; }
+.tvp-volume { width: 5.25rem; height: 3rem; }
 
 .tvp-player :is(button, input):focus-visible,
 .tvp-player [data-focused="true"] {
@@ -207,7 +207,7 @@
 }
 
 @media (max-width: 460px) {
-  .tvp-track-button { width: 2.75rem; min-width: 2.75rem; max-width: 2.75rem; padding: 0 .25rem; }
+  .tvp-track-button { width: 3rem; min-width: 3rem; max-width: 3rem; padding: 0 .25rem; }
   .tvp-track-button strong { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
   .tvp-track-button span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .tvp-controls { padding-inline: .5rem; }

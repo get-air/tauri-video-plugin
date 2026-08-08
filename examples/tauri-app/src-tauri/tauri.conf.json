@@ -22,8 +22,7 @@
         "title": "Tauri Video",
         "width": 1180,
         "minWidth": 600,
-        "minHeight": 680,
-        "transparent": true
+        "minHeight": 680
       }
     ]
   },

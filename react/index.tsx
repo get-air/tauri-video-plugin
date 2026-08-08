@@ -7,10 +7,16 @@ import {
 import {
   type ButtonHTMLAttributes,
   type CSSProperties,
+  type ForwardedRef,
+  type HTMLAttributes,
   type InputHTMLAttributes,
+  type Ref,
+  type RefCallback,
   type ReactNode,
+  forwardRef,
   useCallback,
   useEffect,
+  useInsertionEffect,
   useMemo,
   useRef,
   useState,
@@ -18,6 +24,8 @@ import {
 
 import {
   attachVideo,
+  registerVideoControls,
+  VIDEO_CONTROLS_ATTRIBUTE,
   type AttachVideoOptions,
   type MediaInfo,
   type MediaTrack,
@@ -26,17 +34,29 @@ import {
   type VideoFitMode,
   type VideoSource,
 } from '../guest-js/index'
+import playerStyles from './player.css?raw'
+
+const PLAYER_STYLE_ATTRIBUTE = 'data-tauri-video-player-styles'
+
+function installPlayerStyles(): void {
+  if (typeof document === 'undefined'
+    || document.head.querySelector(`[${PLAYER_STYLE_ATTRIBUTE}]`)) return
+  const style = document.createElement('style')
+  style.setAttribute(PLAYER_STYLE_ATTRIBUTE, '')
+  style.textContent = playerStyles
+  document.head.append(style)
+}
 
 let spatialNavigationInitialized = false
 
-export interface InitializeTvNavigationOptions {
+interface InitializeTvNavigationOptions {
   debug?: boolean
   visualDebug?: boolean
   throttleMs?: number
 }
 
-/** Initialize Norigin once. VideoPlayer calls this automatically in TV mode. */
-export function initializeTvNavigation(options: InitializeTvNavigationOptions = {}): void {
+/** Initialize Norigin once when the first TV player mounts. */
+function initializeTvNavigation(options: InitializeTvNavigationOptions = {}): void {
   if (spatialNavigationInitialized) return
   init({
     debug: options.debug ?? false,
@@ -83,7 +103,7 @@ export function VideoPlayer({
   onReady,
   onError,
 }: VideoPlayerProps) {
-  initializeTvNavigation()
+  useInsertionEffect(installPlayerStyles, [])
   const rootRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const controllerRef = useRef<VideoController | null>(null)
@@ -105,21 +125,6 @@ export function VideoPlayer({
 
   optionsRef.current = options
   callbacksRef.current = { onController, onReady, onError }
-
-  const { ref: focusRef, focusKey } = useFocusable<Record<string, never>, HTMLDivElement>({
-    focusKey: 'TAURI_VIDEO_CONTROLS',
-    focusable: tvMode,
-    trackChildren: true,
-    preferredChildFocusKey: 'TAURI_VIDEO_PLAY',
-    saveLastFocusedChild: true,
-    isFocusBoundary: tvMode,
-  })
-
-  useEffect(() => {
-    if (!tvMode) return
-    const timer = window.setTimeout(() => setFocus('TAURI_VIDEO_PLAY'), 0)
-    return () => window.clearTimeout(timer)
-  }, [tvMode, reloadKey])
 
   useEffect(() => {
     const element = videoRef.current
@@ -353,12 +358,11 @@ export function VideoPlayer({
       aria-label={title}
     >
       <video ref={videoRef} className="tvp-video" poster={poster} playsInline muted={muted} />
-      <div className="tvp-overlay-slot">{children}</div>
-      {loading && <div className="tvp-status" role="status"><span />Loading video</div>}
-      {error && <div className="tvp-error" role="alert">{error}</div>}
+      <div className="tvp-overlay-slot" {...videoControlsAttribute()}>{children}</div>
+      {loading && <div className="tvp-status" role="status" {...videoControlsAttribute()}><span />Loading video</div>}
+      {error && <div className="tvp-error" role="alert" {...videoControlsAttribute()}>{error}</div>}
       {controls && (
-        <FocusContext.Provider value={focusKey}>
-          <div ref={mergeRefs(focusRef)} className="tvp-controls" aria-label="Playback controls">
+        <ControlContainer tvMode={tvMode} focusResetKey={reloadKey}>
             <FocusableSlider
               tvMode={tvMode}
               focusKey="TAURI_VIDEO_TIMELINE"
@@ -463,8 +467,7 @@ export function VideoPlayer({
                 </FocusableButton>
               )}
             </div>
-          </div>
-        </FocusContext.Provider>
+        </ControlContainer>
       )}
     </div>
   )
@@ -474,6 +477,33 @@ export function TvVideoPlayer(props: Omit<VideoPlayerProps, 'tvMode'>) {
   return <VideoPlayer {...props} tvMode />
 }
 
+/**
+ * Returns a callback ref that marks controls mounted anywhere in the React tree
+ * as intentional player UI. It can be combined with a portal or app toolbar.
+ */
+export function useVideoControlRegion<T extends HTMLElement = HTMLDivElement>(): RefCallback<T> {
+  const cleanupRef = useRef<(() => void) | undefined>(undefined)
+  return useCallback((node: T | null) => {
+    cleanupRef.current?.()
+    cleanupRef.current = node ? registerVideoControls(node) : undefined
+  }, [])
+}
+
+export interface VideoControlRegionProps extends HTMLAttributes<HTMLDivElement> {}
+
+/** A framework-owned control region that may be placed anywhere in the page. */
+export const VideoControlRegion = forwardRef(function VideoControlRegion(
+  { children, ...props }: VideoControlRegionProps,
+  forwardedRef: ForwardedRef<HTMLDivElement>,
+) {
+  const controlRef = useVideoControlRegion<HTMLDivElement>()
+  return (
+    <div {...props} ref={mergeRefs(forwardedRef, controlRef)} {...videoControlsAttribute()}>
+      {children}
+    </div>
+  )
+})
+
 interface FocusableButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   tvMode: boolean
   focusKey: string
@@ -481,9 +511,30 @@ interface FocusableButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 function FocusableButton({ tvMode, focusKey, onPress, children, ...props }: FocusableButtonProps) {
+  if (tvMode) {
+    return (
+      <TvFocusableButton focusKey={focusKey} onPress={onPress} {...props}>
+        {children}
+      </TvFocusableButton>
+    )
+  }
+  return (
+    <button
+      {...props}
+      type="button"
+      onClick={(event) => {
+        props.onClick?.(event)
+        onPress()
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+function TvFocusableButton({ focusKey, onPress, children, ...props }: Omit<FocusableButtonProps, 'tvMode'>) {
   const { ref, focused } = useFocusable<Record<string, never>, HTMLButtonElement>({
     focusKey,
-    focusable: tvMode,
     onEnterPress: onPress,
   })
   return (
@@ -510,9 +561,27 @@ interface FocusableSliderProps extends InputHTMLAttributes<HTMLInputElement> {
 }
 
 function FocusableSlider({ tvMode, focusKey, onTvLeft, onTvRight, ...props }: FocusableSliderProps) {
+  if (tvMode) {
+    return (
+      <TvFocusableSlider
+        focusKey={focusKey}
+        onTvLeft={onTvLeft}
+        onTvRight={onTvRight}
+        {...props}
+      />
+    )
+  }
+  return <input {...props} type="range" />
+}
+
+function TvFocusableSlider({
+  focusKey,
+  onTvLeft,
+  onTvRight,
+  ...props
+}: Omit<FocusableSliderProps, 'tvMode'>) {
   const { ref, focused } = useFocusable<Record<string, never>, HTMLInputElement>({
     focusKey,
-    focusable: tvMode,
     onArrowPress: (direction) => {
       if (direction === 'left') onTvLeft()
       else if (direction === 'right') onTvRight()
@@ -521,6 +590,56 @@ function FocusableSlider({ tvMode, focusKey, onTvLeft, onTvRight, ...props }: Fo
     },
   })
   return <input {...props} ref={mergeRefs(ref)} type="range" data-focused={focused || undefined} />
+}
+
+function ControlContainer({
+  tvMode,
+  focusResetKey,
+  children,
+}: {
+  tvMode: boolean
+  focusResetKey?: string | number
+  children: ReactNode
+}) {
+  if (tvMode) return <TvControlContainer focusResetKey={focusResetKey}>{children}</TvControlContainer>
+  return (
+    <div className="tvp-controls" aria-label="Playback controls" {...videoControlsAttribute()}>
+      {children}
+    </div>
+  )
+}
+
+function TvControlContainer({
+  focusResetKey,
+  children,
+}: {
+  focusResetKey?: string | number
+  children: ReactNode
+}) {
+  initializeTvNavigation()
+  const { ref, focusKey } = useFocusable<Record<string, never>, HTMLDivElement>({
+    focusKey: 'TAURI_VIDEO_CONTROLS',
+    trackChildren: true,
+    preferredChildFocusKey: 'TAURI_VIDEO_PLAY',
+    saveLastFocusedChild: true,
+    isFocusBoundary: true,
+  })
+  useEffect(() => {
+    const timer = window.setTimeout(() => setFocus('TAURI_VIDEO_PLAY'), 0)
+    return () => window.clearTimeout(timer)
+  }, [focusResetKey])
+  return (
+    <FocusContext.Provider value={focusKey}>
+      <div
+        ref={mergeRefs(ref)}
+        className="tvp-controls"
+        aria-label="Playback controls"
+        {...videoControlsAttribute()}
+      >
+        {children}
+      </div>
+    </FocusContext.Provider>
+  )
 }
 
 function TrackButton({
@@ -559,8 +678,17 @@ function TrackButton({
   )
 }
 
-function mergeRefs<T>(ref: { current: T | null }): (node: T | null) => void {
-  return (node) => { ref.current = node }
+function mergeRefs<T>(...refs: Array<Ref<T> | undefined>): RefCallback<T> {
+  return (node) => {
+    for (const ref of refs) {
+      if (typeof ref === 'function') ref(node)
+      else if (ref) ref.current = node
+    }
+  }
+}
+
+function videoControlsAttribute(): Record<typeof VIDEO_CONTROLS_ATTRIBUTE, string> {
+  return { [VIDEO_CONTROLS_ATTRIBUTE]: '' }
 }
 
 function formatTime(seconds: number): string {
