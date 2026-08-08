@@ -2,7 +2,7 @@
 name = "tauri-plugin-video"
 version = "0.1.0"
 authors = ["tauri-plugin-video contributors"]
-description = "Realtime, CSS-native universal video playback for Tauri using GStreamer and MediaSource"
+description = "Native video playback for Tauri using platform media engines"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -33,28 +33,19 @@ default = ["gstreamer-runtime"]
 gstreamer-runtime = [
   "dep:gio",
   "dep:gstreamer",
-  "dep:gstreamer-app",
-  "dep:gstreamer-pbutils",
 ]
 mpv-runtime = ["dep:libc", "dep:libmpv2"]
 
 [dependencies]
-axum = { version = "0.8.9", features = ["http1", "json", "tokio"] }
-bytes = "1.10"
 gio = { version = "0.22", optional = true }
 gstreamer = { version = "0.25.3", optional = true }
-gstreamer-app = { version = "0.25.2", optional = true }
-gstreamer-pbutils = { version = "0.25.2", optional = true }
 parking_lot = "0.12"
 libc = { version = "0.2", optional = true }
 libmpv2 = { version = "5.0.3", default-features = true, optional = true }
 serde = { version = "1.0", features = ["derive"] }
 tauri = { version = "2.11.5" }
 thiserror = "2"
-tokio = { version = "1.53.1", features = ["net", "rt", "sync", "time"] }
 tracing = "0.1"
-url = "2.5"
-uuid = { version = "1.18", features = ["v4", "serde"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21.1"
@@ -64,6 +55,3 @@ gtk = "0.18.2"
 
 [build-dependencies]
 tauri-plugin = { version = "2.6.3", features = ["build"] }
-
-[dev-dependencies]
-tempfile = "3.20"

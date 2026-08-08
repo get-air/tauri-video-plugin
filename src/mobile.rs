@@ -3,14 +3,13 @@ use crate::models::{
     NativeSessionRequest,
 };
 use serde::de::DeserializeOwned;
-use serde::Serialize;
 use tauri::{
     plugin::{PluginApi, PluginHandle},
     AppHandle, Runtime,
 };
 
 #[cfg(target_os = "ios")]
-compile_error!("tauri-plugin-video v0.1 supports Android, Android TV, Windows, and Linux only");
+compile_error!("tauri-plugin-video v0.1 supports Android, Android TV, and Linux only");
 
 pub fn init<R: Runtime, C: DeserializeOwned>(
     _app: &AppHandle<R>,
@@ -23,19 +22,7 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 
 pub struct MobileVideo<R: Runtime>(PluginHandle<R>);
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PlaybackPayload {
-    playing: bool,
-}
-
 impl<R: Runtime> MobileVideo<R> {
-    pub fn set_playing(&self, playing: bool) -> crate::Result<()> {
-        self.0
-            .run_mobile_plugin::<()>("setPlaybackState", PlaybackPayload { playing })?;
-        Ok(())
-    }
-
     pub fn open_native(&self, payload: NativeOpenRequest) -> crate::Result<NativePlaybackSnapshot> {
         Ok(self.0.run_mobile_plugin("openNative", payload)?)
     }

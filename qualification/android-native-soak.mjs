@@ -112,7 +112,7 @@ for (let attempt = 0; attempt < 90; attempt += 1) {
   await delay(500)
   ready = await browserSample()
   if (ready?.error) throw new Error(ready.error)
-  if (ready?.snapshot.currentTime >= 1 && ready.stats.state === 'playing') break
+  if (ready?.snapshot.currentTime >= 1 && ready.stats.playing) break
 }
 if (!ready || ready.snapshot.currentTime < 1) throw new Error('Long-stream playback did not start')
 

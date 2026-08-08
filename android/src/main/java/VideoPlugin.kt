@@ -9,8 +9,6 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.View
@@ -67,7 +65,6 @@ import org.videolan.libvlc.util.VLCVideoLayout
 @TauriPlugin
 class VideoPlugin(private val activity: Activity) : Plugin(activity) {
     private val audioManager = activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-    private val mainHandler = Handler(Looper.getMainLooper())
     private var focusRequest: AudioFocusRequest? = null
     private var nativeRoot: FrameLayout? = null
     private var nativeView: PlayerView? = null
@@ -76,17 +73,25 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
     private var nativeDocumentX = 0.0
     private var nativeDocumentY = 0.0
     private var nativeLayoutActive = false
+    private var nativeScrollSynchronizerRegistered = false
     private val nativeScrollSynchronizer = ViewTreeObserver.OnPreDrawListener {
         syncNativeScrollPosition()
         true
     }
     private var nativePlayer: ExoPlayer? = null
-    private var vlcPlayer: VlcFallbackPlayer? = null
-    private var startupFallback: Runnable? = null
+    private var vlcPlayer: VlcPlayer? = null
     private var openGeneration = 0
     private var activeSessionKey: String? = null
     private var videoSize = VideoSize.UNKNOWN
     private val trackTargets = HashMap<Int, Pair<Tracks.Group, Int>>()
+    private var cachedNativeTracks = JSArray()
+    private var cachedVlcTrackSource: List<VlcTrack>? = null
+    private var cachedVlcTracks = JSArray()
+    private val customCaClients = object : LinkedHashMap<String, OkHttpClient>(4, 0.75f, true) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, OkHttpClient>?,
+        ): Boolean = size > 4
+    }
     private var allocator: DefaultAllocator? = null
     private var videoDecoderName = "uninitialized"
     private var lastRenderedFrames = 0L
@@ -115,10 +120,9 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             transparentAncestor = transparentAncestor.parent as? View
         }
         activity.runOnUiThread {
-            hostWebView?.viewTreeObserver?.takeIf { it.isAlive }
-                ?.removeOnPreDrawListener(nativeScrollSynchronizer)
+            unregisterNativeScrollSynchronizer()
             hostWebView = webView
-            webView.viewTreeObserver.addOnPreDrawListener(nativeScrollSynchronizer)
+            registerNativeScrollSynchronizerIfNeeded()
             val nativeContainer = FrameLayout(activity).apply {
                 setBackgroundColor(Color.BLACK)
                 visibility = View.GONE
@@ -132,18 +136,18 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                     if (uiType == Configuration.UI_MODE_TYPE_TELEVISION) 0.24f else 0.16f
                 )
             }
-            val compatibilityView = VLCVideoLayout(activity).apply { visibility = View.GONE }
+            val vlcLayout = VLCVideoLayout(activity).apply { visibility = View.GONE }
             val match = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,
             )
             nativeContainer.addView(playerView, match)
-            nativeContainer.addView(compatibilityView, match)
+            nativeContainer.addView(vlcLayout, match)
             val root = activity.findViewById<ViewGroup>(android.R.id.content)
             root.addView(nativeContainer, 0, FrameLayout.LayoutParams(1, 1))
             nativeRoot = nativeContainer
             nativeView = playerView
-            vlcView = compatibilityView
+            vlcView = vlcLayout
         }
     }
 
@@ -179,35 +183,34 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             val requestedBackend = args.backend?.lowercase() ?: "auto"
             if (requestedBackend !in setOf("auto", "media3", "libvlc")) {
                 root.visibility = View.GONE
+                deactivateNativeLayout()
                 invoke.reject("backend '$requestedBackend' is not available on Android")
                 return@runOnUiThread
             }
             if (requestedBackend == "libvlc") {
-                startVlcFallback(
+                startVlc(
                     args,
                     invoke,
                     AtomicBoolean(false),
                     generation,
-                    "LibVLC was explicitly requested",
                 )
                 return@runOnUiThread
             }
-            val minBufferMs = (args.minBufferMs ?: 12_000).coerceIn(1_000, 120_000)
-            val maxBufferMs = (args.maxBufferMs ?: 45_000).coerceIn(minBufferMs, 180_000)
-            val playbackBufferMs = (args.playbackBufferMs ?: 2_500).coerceIn(250, minBufferMs)
-            val rebufferMs = (args.rebufferMs ?: 6_000).coerceIn(500, minBufferMs)
-            val targetBufferBytes = (args.targetBufferBytes ?: 96L * 1024 * 1024)
-                .coerceIn(8L * 1024 * 1024, 512L * 1024 * 1024)
-                .toInt()
             val playerAllocator = DefaultAllocator(true, 64 * 1024)
             allocator = playerAllocator
-            val loadControl = DefaultLoadControl.Builder()
-                // The byte ceiling is the final guardrail on low-memory TV boxes.
-                .setAllocator(playerAllocator)
-                .setBufferDurationsMs(minBufferMs, maxBufferMs, playbackBufferMs, rebufferMs)
-                .setTargetBufferBytes(targetBufferBytes)
-                .setPrioritizeTimeOverSizeThresholds(false)
-                .build()
+            val loadControlBuilder = DefaultLoadControl.Builder().setAllocator(playerAllocator)
+            resolveRequestedBufferDurations(args)?.let { durations ->
+                loadControlBuilder.setBufferDurationsMs(
+                    durations.minMs,
+                    durations.maxMs,
+                    durations.playbackMs,
+                    durations.rebufferMs,
+                )
+            }
+            resolveRequestedTargetBufferBytes(args.targetBufferBytes)?.let {
+                loadControlBuilder.setTargetBufferBytes(it)
+            }
+            val loadControl = loadControlBuilder.build()
             // Several Amlogic TV firmwares advertise Dolby Vision profile 7
             // decoders that open successfully but render black. Profile 7 has
             // a standards-compliant HEVC base layer, so select the HEVC codec
@@ -231,6 +234,7 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 createHttpDataSourceFactory(args, requestHeaders)
             } catch (error: Exception) {
                 root.visibility = View.GONE
+                deactivateNativeLayout()
                 invoke.reject(error.message ?: "Could not configure the HTTPS media source")
                 return@runOnUiThread
             }
@@ -261,7 +265,6 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 }
             })
             val resolved = AtomicBoolean(false)
-            val fallbackStarted = AtomicBoolean(false)
             var playerReady = false
             var firstFrameRendered = false
             fun resolveWhenRenderable() {
@@ -269,31 +272,22 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                     && (firstFrameRendered || !args.autoplay)
                     && resolved.compareAndSet(false, true)
                 ) {
-                    cancelStartupFallback()
                     invoke.resolve(nativeSnapshot(player))
                 }
             }
-            fun fallbackOrReject(message: String) {
-                if (requestedBackend == "media3"
-                    || args.compatibilityFallback == "disabled"
-                    || args.decoderFallback == false
-                ) {
-                    if (resolved.compareAndSet(false, true)) {
-                        cancelStartupFallback()
-                        invoke.reject(message)
-                    }
-                } else if (fallbackStarted.compareAndSet(false, true)) {
-                    cancelStartupFallback()
-                    startVlcFallback(args, invoke, resolved, generation, message)
+            fun rejectMedia3(message: String) {
+                if (resolved.compareAndSet(false, true)) {
+                    invoke.reject(message)
+                    closeNativePlayer()
                 }
             }
             player.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(state: Int) {
                     if (state == Player.STATE_READY) {
-                        compatibilityReason(player)?.let {
-                            fallbackOrReject(it)
-                            return
-                        }
+                        // onTracksChanged normally arrives before READY, but initialize from
+                        // the authoritative player state so the first resolved snapshot can
+                        // never expose an empty cache because of callback ordering.
+                        refreshNativeTracks(player.currentTracks)
                         playerReady = true
                         resolveWhenRenderable()
                     } else if (state == Player.STATE_ENDED) {
@@ -312,11 +306,15 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
-                    fallbackOrReject(error.message ?: "Media3 playback failed")
+                    rejectMedia3(error.message ?: "Media3 playback failed")
                 }
 
                 override fun onVideoSizeChanged(size: VideoSize) {
                     videoSize = size
+                }
+
+                override fun onTracksChanged(tracks: Tracks) {
+                    refreshNativeTracks(tracks)
                 }
             })
             val mediaItem = MediaItem.fromUri(args.uri)
@@ -333,17 +331,6 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 player.playWhenReady = true
             }
             player.prepare()
-            if (requestedBackend != "media3"
-                && args.compatibilityFallback != "disabled"
-                && args.decoderFallback != false
-            ) {
-                val timeoutMs = (args.startupTimeoutMs ?: 8_000).coerceIn(2_000, 60_000)
-                startupFallback = Runnable {
-                    if (generation == openGeneration && !resolved.get()) {
-                        fallbackOrReject("Media3 did not render a frame within ${timeoutMs}ms")
-                    }
-                }.also { mainHandler.postDelayed(it, timeoutMs.toLong()) }
-            }
         }
     }
 
@@ -356,8 +343,8 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 return@runOnUiThread
             }
             val player = nativePlayer
-            val fallback = vlcPlayer
-            if (player == null && fallback == null) {
+            val vlc = vlcPlayer
+            if (player == null && vlc == null) {
                 invoke.reject("native player is not open")
                 return@runOnUiThread
             }
@@ -370,28 +357,28 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                                 player.seekToDefaultPosition()
                             }
                             player.play()
-                        } else fallback?.play()
+                        } else vlc?.play()
                     }
                     "pause" -> {
-                        player?.pause() ?: fallback?.pause()
+                        player?.pause() ?: vlc?.pause()
                         setPlaybackActive(false)
                     }
                     "seek" -> if (player != null) player.seekTo((args.value * 1000.0).toLong())
-                        else fallback?.seekTo((args.value * 1000.0).toLong())
+                        else vlc?.seekTo((args.value * 1000.0).toLong())
                     "volume" -> if (player != null) {
                         player.volume = args.value.toFloat().coerceIn(0f, 1f)
-                    } else fallback?.setVolume(args.value.toFloat())
+                    } else vlc?.setVolume(args.value.toFloat())
                     "track" -> if (player != null) selectNativeTrack(player, args.index)
-                        else fallback?.selectTrack(args.index)
+                        else vlc?.selectTrack(args.index)
                     "deselectTrack" -> if (player != null) deselectNativeTrack(player, args.index)
-                        else fallback?.deselectTrack(args.index)
+                        else vlc?.deselectTrack(args.index)
                     "fit", "crop", "stretch" -> if (player != null) {
                         nativeView?.resizeMode = when (args.action) {
                             "crop" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                             "stretch" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
                             else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                         }
-                    } else fallback?.setFit(args.action)
+                    } else vlc?.setFit(args.action)
                     "zoom" -> if (player != null) {
                         nativeView?.videoSurfaceView?.apply {
                             val zoom = args.value.toFloat().coerceIn(1f, 2f)
@@ -399,7 +386,7 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                             scaleY = zoom
                         }
                     } else {
-                        fallback?.setZoom(args.value.toFloat())
+                        vlc?.setZoom(args.value.toFloat())
                     }
                     else -> throw IllegalArgumentException("unknown native action ${args.action}")
                 }
@@ -439,8 +426,8 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 return@runOnUiThread
             }
             val player = nativePlayer
-            val fallback = vlcPlayer
-            if (player == null && fallback == null) invoke.reject("native player is not open")
+            val vlc = vlcPlayer
+            if (player == null && vlc == null) invoke.reject("native player is not open")
             else player?.playerError?.let { invoke.reject(it.message ?: "Media3 playback failed") }
                 ?: invoke.resolve(activeNativeSnapshot())
         }
@@ -453,13 +440,6 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             if (args.sessionKey == activeSessionKey) closeNativePlayer()
             invoke.resolve()
         }
-    }
-
-    @Command
-    fun setPlaybackState(invoke: Invoke) {
-        val args = invoke.parseArgs(PlaybackArgs::class.java)
-        if (setPlaybackActive(args.playing)) invoke.resolve()
-        else invoke.reject("audio focus was denied")
     }
 
     private fun setPlaybackActive(playing: Boolean): Boolean {
@@ -513,33 +493,7 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             .clearOverridesOfType(group.type)
             .addOverride(TrackSelectionOverride(group.mediaTrackGroup, track))
             .build()
-    }
-
-    private fun compatibilityReason(player: ExoPlayer): String? {
-        val videoGroups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO }
-        if (videoGroups.isEmpty()) return "Media3 did not expose a playable video track"
-        if (videoGroups.none(Tracks.Group::isSupported)) {
-            return "Media3 has no decoder for the video's format"
-        }
-        val nativeMimes = setOf(
-            MimeTypes.VIDEO_H264,
-            MimeTypes.VIDEO_H265,
-            MimeTypes.VIDEO_DOLBY_VISION,
-            MimeTypes.VIDEO_VP8,
-            MimeTypes.VIDEO_VP9,
-            MimeTypes.VIDEO_AV1,
-            MimeTypes.VIDEO_MPEG2,
-            MimeTypes.VIDEO_MP4V,
-        )
-        val selectedFormats = videoGroups.flatMap { group ->
-            (0 until group.length)
-                .filter(group::isTrackSelected)
-                .map(group::getTrackFormat)
-        }
-        if (selectedFormats.any { it.sampleMimeType !in nativeMimes }) {
-            return "Media3 selected a video format outside the native decoder path"
-        }
-        return null
+        refreshNativeTracks(player.currentTracks)
     }
 
     private fun deselectNativeTrack(player: ExoPlayer, target: Int) {
@@ -548,42 +502,38 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             .buildUpon()
             .setTrackTypeDisabled(group.type, true)
             .build()
+        refreshNativeTracks(player.currentTracks)
     }
 
-    private fun startVlcFallback(
+    private fun startVlc(
         args: NativeOpenArgs,
         invoke: Invoke,
         resolved: AtomicBoolean,
         generation: Int,
-        media3Failure: String,
     ) {
         if (generation != openGeneration || vlcPlayer != null) return
         val root = nativeRoot
-        val compatibilityView = vlcView
-        if (root == null || compatibilityView == null) {
+        val vlcLayout = vlcView
+        if (root == null || vlcLayout == null) {
+            root?.visibility = View.GONE
+            deactivateNativeLayout()
             if (resolved.compareAndSet(false, true)) invoke.reject("LibVLC video surface is unavailable")
             return
         }
-        val resumePositionMs = nativePlayer?.currentPosition
-            ?.takeIf { it > 0L }
-            ?: args.startPositionSeconds?.times(1_000.0)?.toLong()
-        nativeView?.player = null
-        nativePlayer?.release()
-        nativePlayer = null
-        allocator = null
+        clearVlcTrackCache()
         nativeView?.visibility = View.GONE
-        compatibilityView.visibility = View.VISIBLE
+        vlcLayout.visibility = View.VISIBLE
         root.visibility = View.VISIBLE
-        val fallback = try {
-            VlcFallbackPlayer(
+        val vlc = try {
+            VlcPlayer(
                 activity,
-                compatibilityView,
-                VlcFallbackConfig(
+                vlcLayout,
+                VlcPlayerConfig(
                     uri = args.uri,
                     autoplay = args.autoplay,
                     initialVolume = if (args.muted) 0f else args.volume.toFloat().coerceIn(0f, 1f),
-                    startPositionMs = resumePositionMs,
-                    networkCachingMs = (args.minBufferMs ?: 8_000).coerceIn(1_000, 20_000),
+                    startPositionMs = args.startPositionSeconds?.times(1_000.0)?.toLong(),
+                    networkCachingMs = args.minBufferMs?.coerceIn(1_000, 120_000),
                     userAgent = args.userAgent,
                     referrer = args.referrer,
                     cookies = args.cookies,
@@ -591,24 +541,25 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 ),
             )
         } catch (error: Throwable) {
-            Log.e("TauriVideo", "LibVLC compatibility backend failed to initialize", error)
-            compatibilityView.visibility = View.GONE
+            Log.e("TauriVideo", "LibVLC backend failed to initialize", error)
+            vlcLayout.visibility = View.GONE
             root.visibility = View.GONE
+            deactivateNativeLayout()
             if (resolved.compareAndSet(false, true)) {
                 invoke.reject(
-                    "$media3Failure; LibVLC startup failed: ${error.javaClass.simpleName}: " +
+                    "LibVLC startup failed: ${error.javaClass.simpleName}: " +
                         (error.message ?: "no diagnostic message")
                 )
             }
             return
         }
-        vlcPlayer = fallback
-        compatibilityView.post {
-            if (generation != openGeneration || vlcPlayer !== fallback) return@post
-            fallback.open(
+        vlcPlayer = vlc
+        vlcLayout.post {
+            if (generation != openGeneration || vlcPlayer !== vlc) return@post
+            vlc.open(
                 onRenderable = {
                     activity.runOnUiThread {
-                        if (generation != openGeneration || vlcPlayer !== fallback) return@runOnUiThread
+                        if (generation != openGeneration || vlcPlayer !== vlc) return@runOnUiThread
                         if (args.autoplay) setPlaybackActive(true)
                         if (resolved.compareAndSet(false, true)) {
                             invoke.resolve(activeNativeSnapshot())
@@ -617,13 +568,14 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 },
                 onError = { vlcFailure ->
                     activity.runOnUiThread {
-                        if (generation != openGeneration || vlcPlayer !== fallback) return@runOnUiThread
-                        fallback.release()
+                        if (generation != openGeneration || vlcPlayer !== vlc) return@runOnUiThread
+                        vlc.release()
                         vlcPlayer = null
-                        compatibilityView.visibility = View.GONE
+                        vlcLayout.visibility = View.GONE
                         root.visibility = View.GONE
+                        deactivateNativeLayout()
                         if (resolved.compareAndSet(false, true)) {
-                            invoke.reject("$media3Failure; $vlcFailure")
+                            invoke.reject(vlcFailure)
                         }
                     }
                 },
@@ -631,29 +583,14 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
-    private fun cancelStartupFallback() {
-        startupFallback?.let(mainHandler::removeCallbacks)
-        startupFallback = null
-    }
-
     private fun activeNativeSnapshot(): JSObject {
         nativePlayer?.let { return nativeSnapshot(it) }
-        val fallback = vlcPlayer ?: error("native player is not open")
-        return vlcSnapshot(fallback.snapshot(nativeContainer))
+        val vlc = vlcPlayer ?: error("native player is not open")
+        return vlcSnapshot(vlc.snapshot(nativeContainer))
     }
 
     private fun vlcSnapshot(snapshot: VlcSnapshot): JSObject {
-        val tracks = snapshot.tracks.map { track ->
-            JSObject().apply {
-                put("id", track.id.toString())
-                put("index", track.id)
-                put("kind", track.kind)
-                put("language", track.language)
-                put("label", track.label)
-                put("codec", track.codec)
-                put("selected", track.selected)
-            }
-        }
+        val tracks = vlcTrackArray(snapshot.tracks)
         return JSObject().apply {
             put("durationSeconds", snapshot.durationSeconds)
             put("currentTimeSeconds", snapshot.currentTimeSeconds)
@@ -668,8 +605,30 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             put("encodedBytesBuffered", snapshot.encodedBytesBuffered)
             put("averageFrameProcessingUs", snapshot.averageFrameProcessingUs)
             put("container", snapshot.container)
-            put("tracks", JSArray.from(tracks.toTypedArray()))
+            put("tracks", tracks)
         }
+    }
+
+    private fun vlcTrackArray(tracks: List<VlcTrack>): JSArray {
+        if (cachedVlcTrackSource === tracks) return cachedVlcTracks
+        cachedVlcTrackSource = tracks
+        cachedVlcTracks = JSArray(tracks.map { track ->
+            JSObject().apply {
+                put("id", track.id.toString())
+                put("index", track.id)
+                put("kind", track.kind)
+                put("language", track.language)
+                put("label", track.label)
+                put("codec", track.codec)
+                put("selected", track.selected)
+            }
+        })
+        return cachedVlcTracks
+    }
+
+    private fun clearVlcTrackCache() {
+        cachedVlcTrackSource = null
+        cachedVlcTracks = JSArray()
     }
 
     private fun resolveCaFile(args: NativeOpenArgs): File? = when (val requested = args.tlsCaFile?.trim()) {
@@ -694,6 +653,15 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             return factory
         }
 
+        val cacheKey = "${caFile.canonicalPath}:${caFile.length()}:${caFile.lastModified()}"
+        val client = customCaClients.getOrPut(cacheKey) { buildCustomCaClient(caFile) }
+        val factory = OkHttpDataSource.Factory(client)
+            .setDefaultRequestProperties(requestHeaders)
+        args.userAgent?.takeIf(String::isNotBlank)?.let(factory::setUserAgent)
+        return factory
+    }
+
+    private fun buildCustomCaClient(caFile: File): OkHttpClient {
         val certificateFactory = CertificateFactory.getInstance("X.509")
         val certificates = PEM_CERTIFICATE.findAll(caFile.readText()).map { match ->
             ByteArrayInputStream(match.value.toByteArray(Charsets.US_ASCII)).use {
@@ -725,16 +693,12 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         val sslContext = SSLContext.getInstance("TLS").apply {
             init(null, arrayOf(trustManager), null)
         }
-        val client = OkHttpClient.Builder()
+        return OkHttpClient.Builder()
             .sslSocketFactory(sslContext.socketFactory, trustManager)
             .followRedirects(true)
             .followSslRedirects(true)
             .retryOnConnectionFailure(true)
             .build()
-        val factory = OkHttpDataSource.Factory(client)
-            .setDefaultRequestProperties(requestHeaders)
-        args.userAgent?.takeIf(String::isNotBlank)?.let(factory::setUserAgent)
-        return factory
     }
 
     private fun applyNativeLayout(
@@ -761,7 +725,27 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         nativeDocumentX = x + scrollX
         nativeDocumentY = y + scrollY
         nativeLayoutActive = true
+        registerNativeScrollSynchronizerIfNeeded()
         syncNativeScrollPosition()
+    }
+
+    private fun registerNativeScrollSynchronizerIfNeeded() {
+        if (!nativeLayoutActive || nativeScrollSynchronizerRegistered) return
+        val observer = hostWebView?.viewTreeObserver?.takeIf { it.isAlive } ?: return
+        observer.addOnPreDrawListener(nativeScrollSynchronizer)
+        nativeScrollSynchronizerRegistered = true
+    }
+
+    private fun unregisterNativeScrollSynchronizer() {
+        if (!nativeScrollSynchronizerRegistered) return
+        hostWebView?.viewTreeObserver?.takeIf { it.isAlive }
+            ?.removeOnPreDrawListener(nativeScrollSynchronizer)
+        nativeScrollSynchronizerRegistered = false
+    }
+
+    private fun deactivateNativeLayout() {
+        nativeLayoutActive = false
+        unregisterNativeScrollSynchronizer()
     }
 
     private fun syncNativeScrollPosition() {
@@ -793,32 +777,6 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         val averageProcessingUs = if (processingCount > 0) {
             (counters?.totalVideoFrameProcessingOffsetUs ?: 0L).toDouble() / processingCount
         } else 0.0
-        val tracks = ArrayList<JSObject>()
-        trackTargets.clear()
-        var target = 0
-        player.currentTracks.groups.forEach { group ->
-            val kind = when (group.type) {
-                C.TRACK_TYPE_VIDEO -> "video"
-                C.TRACK_TYPE_AUDIO -> "audio"
-                C.TRACK_TYPE_TEXT -> "subtitle"
-                else -> return@forEach
-            }
-            for (index in 0 until group.length) {
-                val format: Format = group.getTrackFormat(index)
-                val language = format.language ?: "und"
-                trackTargets[target] = group to index
-                tracks.add(JSObject().apply {
-                    put("id", target.toString())
-                    put("index", target)
-                    put("kind", kind)
-                    put("language", language)
-                    put("label", format.label ?: if (language == "und") kind else language.uppercase())
-                    put("codec", format.codecs ?: format.sampleMimeType?.substringAfter('/') ?: "")
-                    put("selected", group.isTrackSelected(index))
-                })
-                target += 1
-            }
-        }
         val durationMs = player.duration.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0) ?: 0
         return JSObject().apply {
             put("durationSeconds", durationMs / 1000.0)
@@ -834,14 +792,48 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             put("encodedBytesBuffered", allocator?.totalBytesAllocated?.toLong() ?: 0L)
             put("averageFrameProcessingUs", averageProcessingUs)
             put("container", nativeContainer)
-            put("tracks", JSArray.from(tracks.toTypedArray()))
+            put("tracks", cachedNativeTracks)
         }
+    }
+
+    private fun refreshNativeTracks(tracks: Tracks) {
+        val cachedTracks = ArrayList<JSObject>()
+        trackTargets.clear()
+        var target = 0
+        tracks.groups.forEach { group ->
+            val kind = when (group.type) {
+                C.TRACK_TYPE_VIDEO -> "video"
+                C.TRACK_TYPE_AUDIO -> "audio"
+                C.TRACK_TYPE_TEXT -> "subtitle"
+                else -> return@forEach
+            }
+            for (index in 0 until group.length) {
+                val format: Format = group.getTrackFormat(index)
+                val language = format.language ?: "und"
+                trackTargets[target] = group to index
+                cachedTracks.add(JSObject().apply {
+                    put("id", target.toString())
+                    put("index", target)
+                    put("kind", kind)
+                    put("language", language)
+                    put("label", format.label ?: if (language == "und") kind else language.uppercase())
+                    put("codec", format.codecs ?: format.sampleMimeType?.substringAfter('/') ?: "")
+                    put("selected", group.isTrackSelected(index))
+                })
+                target += 1
+            }
+        }
+        cachedNativeTracks = JSArray(cachedTracks)
+    }
+
+    private fun clearNativeTrackCache() {
+        trackTargets.clear()
+        cachedNativeTracks = JSArray()
     }
 
     private fun closeNativePlayer() {
         openGeneration += 1
         activeSessionKey = null
-        cancelStartupFallback()
         setPlaybackActive(false)
         nativeView?.player = null
         nativePlayer?.release()
@@ -851,17 +843,54 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         nativeView?.visibility = View.VISIBLE
         vlcView?.visibility = View.GONE
         nativeRoot?.visibility = View.GONE
-        nativeLayoutActive = false
+        deactivateNativeLayout()
         allocator = null
         videoDecoderName = "uninitialized"
         lastRenderedFrames = 0L
         lastFrameSampleNs = 0L
         measuredFps = 0.0
         nativeContainer = "unknown"
-        trackTargets.clear()
+        clearNativeTrackCache()
+        clearVlcTrackCache()
         videoSize = VideoSize.UNKNOWN
     }
 }
+
+internal data class NativeBufferDurations(
+    val minMs: Int,
+    val maxMs: Int,
+    val playbackMs: Int,
+    val rebufferMs: Int,
+)
+
+internal fun resolveRequestedBufferDurations(args: NativeOpenArgs): NativeBufferDurations? {
+    if (
+        args.minBufferMs == null && args.maxBufferMs == null &&
+        args.playbackBufferMs == null && args.rebufferMs == null
+    ) return null
+
+    val requestedMaxMs = args.maxBufferMs?.coerceIn(1_000, 180_000)
+    val minMs = (args.minBufferMs
+        ?: requestedMaxMs?.coerceAtMost(DefaultLoadControl.DEFAULT_MIN_BUFFER_MS)
+        ?: DefaultLoadControl.DEFAULT_MIN_BUFFER_MS)
+        .coerceIn(1_000, 120_000)
+    val maxMs = (requestedMaxMs ?: DefaultLoadControl.DEFAULT_MAX_BUFFER_MS)
+        .coerceIn(minMs, 180_000)
+    return NativeBufferDurations(
+        minMs = minMs,
+        maxMs = maxMs,
+        playbackMs = (args.playbackBufferMs ?: DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS)
+            .coerceIn(250, minMs),
+        rebufferMs = (
+            args.rebufferMs
+                ?: DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
+            ).coerceIn(500, minMs),
+    )
+}
+
+internal fun resolveRequestedTargetBufferBytes(requestedBytes: Long?): Int? = requestedBytes
+    ?.coerceIn(8L * 1024 * 1024, 512L * 1024 * 1024)
+    ?.toInt()
 
 private fun containerFromUri(value: String): String {
     val name = Uri.parse(value).lastPathSegment?.substringBefore('?')?.lowercase() ?: return "unknown"
@@ -876,7 +905,6 @@ private fun containerFromUri(value: String): String {
     }
 }
 
-@InvokeArg class PlaybackArgs { var playing: Boolean = false }
 @InvokeArg class NativeOpenArgs {
     var sessionKey: String = ""
     var uri: String = ""; var x: Double = 0.0; var y: Double = 0.0
@@ -891,7 +919,6 @@ private fun containerFromUri(value: String): String {
     var playbackBufferMs: Int? = null; var rebufferMs: Int? = null
     var targetBufferBytes: Long? = null; var decoderFallback: Boolean? = null
     var dolbyVisionMode: String? = null; var tunneling: Boolean? = null
-    var compatibilityFallback: String? = null; var startupTimeoutMs: Int? = null
 }
 @InvokeArg class NativeLayoutArgs {
     var sessionKey: String = ""

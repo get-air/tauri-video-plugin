@@ -26,9 +26,71 @@ duration, cache end, tracks, selected streams, frame drops, hardware decoder,
 fit, zoom, seeking, and volume are translated into the same controller model as
 GStreamer.
 
-`auto` continues to choose GStreamer when both features are compiled. libmpv is
-an explicit compatibility choice, and requesting it without `mpv-runtime`
+`auto` always means GStreamer. libmpv is an explicit alternative, and requesting it without `mpv-runtime`
 returns an actionable runtime error.
+
+## Buffering and memory
+
+Both native Linux backends keep their own buffering defaults unless the
+application supplies an override. Configure either backend through the same API:
+
+```ts
+await attachVideo(video, {
+  source: uri,
+  backend: 'gstreamer', // or 'mpv'
+  platform: {
+    linux: {
+      buffer: { maxSeconds: 15, maxBytes: 64 * 1024 * 1024 },
+    },
+  },
+})
+```
+
+On Linux, only `maxSeconds` and `maxBytes` are used. `minSeconds`,
+`playSeconds`, and `rebufferSeconds` configure Android Media3 and do not change
+either Linux backend.
+
+GStreamer clamps the duration to 3-120 seconds and the byte target between
+4 MiB and 2,147,483,647 bytes when provided. Omitted values leave `playbin3`'s
+`buffer-duration` and `buffer-size` untouched. Buffering messages temporarily put
+the pipeline in `PAUSED` until the backend's target is full, while preserving
+whether the caller actually requested play or pause.
+
+mpv clamps an explicit duration to 3-120 seconds and an explicit aggregate
+packet-cache target to at least 8 MiB. When `maxBytes` is provided, one quarter
+(up to 16 MiB) is assigned to backward packets and the remainder to forward
+packets, with cross-cache donation disabled so the requested aggregate remains
+predictable. Without overrides, mpv's native cache values and donation behavior
+remain intact. They are captured at handle creation so reusing the player after
+an explicitly tuned source correctly restores its native defaults.
+
+These values bound encoded source or demuxer packet buffering; they are not
+whole-process memory limits. Decoder reference frames, audio/video output
+queues, GL textures, subtitle-composition textures, allocator overhead, and the
+WebView remain outside the byte target. GStreamer's `encodedBytesBuffered`
+snapshot is an estimate only when an explicit byte target exists; it reports
+zero when the backend owns an unknown automatic target. Measure process RSS/PSS
+on deployment hardware before overriding either backend.
+
+## GStreamer 1.26+ subtitle composition
+
+On GStreamer 1.26 and newer, the plugin works around subtitle flicker observed
+with overlay metadata reaching `gtkglsink`. It inserts
+[`gloverlaycompositor`](https://gstreamer.freedesktop.org/documentation/opengl/gloverlaycompositor.html)
+and requires plain RGBA `GLMemory` downstream, which flattens
+`GstVideoOverlayCompositionMeta` into the video texture before the GTK sink
+draws it. The operation stays on the GL path; it does add a compositor pass and
+texture memory outside the encoded-buffer target.
+
+Verify that the OpenGL element from GStreamer Base Plug-ins is installed:
+
+```sh
+gst-inspect-1.0 gloverlaycompositor
+```
+
+If the element is unavailable, playback falls back to the direct `gtkglsink`
+path and logs a warning; video still plays, but subtitles may flicker. GStreamer
+versions older than 1.26 keep the direct path.
 
 ## Tauri 2.11.4 GTK compatibility
 

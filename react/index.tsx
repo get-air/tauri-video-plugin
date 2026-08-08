@@ -126,14 +126,27 @@ export function VideoPlayer({
     if (!element) return
     const videoElement = element
     let cancelled = false
-    let interval: number | undefined
+    let lastMediaTracks: readonly MediaTrack[] | undefined
+    let lastMediaChapters: MediaInfo['chapters'] | undefined
+    let lastMediaDuration: number | undefined
+    let lastMediaContainer: string | undefined
     const abort = new AbortController()
 
-    const update = () => {
+    const update = (forceMedia = false) => {
       const controller = controllerRef.current
       if (!controller) return
       const latest = controller.media
-      setMedia({ ...latest, tracks: [...latest.tracks], chapters: [...latest.chapters] })
+      if (forceMedia
+        || latest.tracks !== lastMediaTracks
+        || latest.chapters !== lastMediaChapters
+        || latest.durationSeconds !== lastMediaDuration
+        || latest.container !== lastMediaContainer) {
+        lastMediaTracks = latest.tracks
+        lastMediaChapters = latest.chapters
+        lastMediaDuration = latest.durationSeconds
+        lastMediaContainer = latest.container
+        setMedia({ ...latest, tracks: [...latest.tracks], chapters: [...latest.chapters] })
+      }
       const quality = controller.playbackQuality()
       const position = quality.mediaTimeSeconds ?? element.currentTime
       if (Number.isFinite(position)) setCurrentTime(Math.max(0, position))
@@ -150,6 +163,8 @@ export function VideoPlayer({
     }
     const handlePlay = () => setPlaying(true)
     const handlePause = () => setPlaying(false)
+    const handleBufferProgress = () => update()
+    const handleTrackChange = () => update(true)
 
     async function open() {
       setLoading(true)
@@ -173,15 +188,14 @@ export function VideoPlayer({
         controllerRef.current = controller
         callbacksRef.current.onController?.(controller)
         controller.addEventListener('timeupdate', handleTime)
-        controller.addEventListener('bufferprogress', update)
-        controller.addEventListener('trackchange', update)
+        controller.addEventListener('bufferprogress', handleBufferProgress)
+        controller.addEventListener('trackchange', handleTrackChange)
         controller.addEventListener('error', handleError)
         videoElement.addEventListener('play', handlePlay)
         videoElement.addEventListener('pause', handlePause)
         videoElement.volume = volume
         await controller.setVolume(volume)
         update()
-        interval = window.setInterval(update, 250)
         setLoading(false)
         callbacksRef.current.onReady?.(controller)
         if (autoPlay) {
@@ -203,14 +217,13 @@ export function VideoPlayer({
     return () => {
       cancelled = true
       abort.abort()
-      if (interval !== undefined) window.clearInterval(interval)
       const controller = controllerRef.current
       controllerRef.current = null
       callbacksRef.current.onController?.(null)
       if (controller) {
         controller.removeEventListener('timeupdate', handleTime)
-        controller.removeEventListener('bufferprogress', update)
-        controller.removeEventListener('trackchange', update)
+        controller.removeEventListener('bufferprogress', handleBufferProgress)
+        controller.removeEventListener('trackchange', handleTrackChange)
         controller.removeEventListener('error', handleError)
         videoElement.removeEventListener('play', handlePlay)
         videoElement.removeEventListener('pause', handlePause)

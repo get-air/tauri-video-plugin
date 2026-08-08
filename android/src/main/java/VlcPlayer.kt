@@ -12,11 +12,11 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
-/** Direct-SurfaceView compatibility backend used only when Media3 cannot render a stream. */
-internal class VlcFallbackPlayer(
+/** Explicit LibVLC backend that renders directly into a SurfaceView. */
+internal class VlcPlayer(
     context: Context,
     private val videoLayout: VLCVideoLayout,
-    private val config: VlcFallbackConfig,
+    private val config: VlcPlayerConfig,
 ) {
     private val libVlc: LibVLC
     private val player: MediaPlayer
@@ -29,6 +29,7 @@ internal class VlcFallbackPlayer(
     private var playingEventReceived = false
     private var videoOutputReceived = false
     private var ended = false
+    private var cachedTracks: List<VlcTrack> = emptyList()
 
     init {
         // LibVLC appends its selected audio output and display chroma to this
@@ -50,6 +51,9 @@ internal class VlcFallbackPlayer(
         try {
             player.attachViews(videoLayout, null, true, false)
             player.setVideoScale(MediaPlayer.ScaleType.SURFACE_BEST_FIT)
+            // LibVLC's VLCObject dispatches public events through a Handler on the main
+            // looper. VideoPlugin invokes snapshots and controls on that same looper, so
+            // the cached track list and target map remain thread-confined without locks.
             player.setEventListener { event ->
                 when (event.type) {
                     MediaPlayer.Event.Buffering -> bufferingPercent = event.buffering.coerceIn(0f, 100f)
@@ -61,8 +65,13 @@ internal class VlcFallbackPlayer(
                     }
                     MediaPlayer.Event.Vout -> {
                         videoOutputReceived = event.voutCount > 0
+                        refreshTracks()
                         resolveWhenRenderable(completed, onRenderable)
                     }
+                    MediaPlayer.Event.MediaChanged,
+                    MediaPlayer.Event.ESAdded,
+                    MediaPlayer.Event.ESDeleted,
+                    MediaPlayer.Event.ESSelected -> refreshTracks()
                     MediaPlayer.Event.EncounteredError -> {
                         if (completed.compareAndSet(false, true)) {
                             onError("LibVLC could not decode or read the stream")
@@ -73,7 +82,7 @@ internal class VlcFallbackPlayer(
             }
             val media = Media(libVlc, Uri.parse(config.uri)).apply {
                 setHWDecoderEnabled(true, true)
-                addOption(":network-caching=${config.networkCachingMs}")
+                config.networkCachingMs?.let { addOption(":network-caching=$it") }
                 addOption(":clock-jitter=0")
                 addOption(":clock-synchro=0")
                 config.userAgent?.takeIf(String::isNotBlank)?.let {
@@ -93,13 +102,14 @@ internal class VlcFallbackPlayer(
             player.play()
         } catch (error: Throwable) {
             if (completed.compareAndSet(false, true)) {
-                onError(error.message ?: "LibVLC compatibility backend failed to start")
+                onError(error.message ?: "LibVLC alternative backend failed to start")
             }
         }
     }
 
     private fun resolveWhenRenderable(completed: AtomicBoolean, onRenderable: () -> Unit) {
         if (!playingEventReceived || !videoOutputReceived || !completed.compareAndSet(false, true)) return
+        refreshTracks()
         if (!config.autoplay) player.pause()
         onRenderable()
     }
@@ -135,6 +145,7 @@ internal class VlcFallbackPlayer(
             is VlcTrackTarget.Audio -> player.setAudioTrack(track.id)
             is VlcTrackTarget.Subtitle -> player.setSpuTrack(track.id)
         }
+        refreshTracks()
     }
 
     fun deselectTrack(target: Int) {
@@ -143,6 +154,7 @@ internal class VlcFallbackPlayer(
             is VlcTrackTarget.Audio -> player.setAudioTrack(-1)
             is VlcTrackTarget.Subtitle -> player.setSpuTrack(-1)
         }
+        refreshTracks()
     }
 
     fun setFit(mode: String) {
@@ -173,7 +185,7 @@ internal class VlcFallbackPlayer(
         updateMeasuredFps(presented)
         val durationMs = player.length.coerceAtLeast(0L)
         val currentMs = player.time.coerceAtLeast(0L)
-        val estimatedReserveMs = (config.networkCachingMs * (bufferingPercent / 100f)).toLong()
+        val estimatedReserveMs = ((config.networkCachingMs ?: 0) * (bufferingPercent / 100f)).toLong()
         val bufferedMs = if (durationMs > 0L) min(durationMs, currentMs + estimatedReserveMs)
             else currentMs + estimatedReserveMs
         val video = player.currentVideoTrack
@@ -191,7 +203,7 @@ internal class VlcFallbackPlayer(
             encodedBytesBuffered = 0L,
             averageFrameProcessingUs = 0.0,
             container = container,
-            tracks = collectTracks(),
+            tracks = cachedTracks,
         )
     }
 
@@ -208,7 +220,7 @@ internal class VlcFallbackPlayer(
         }
     }
 
-    private fun collectTracks(): List<VlcTrack> {
+    private fun refreshTracks() {
         val descriptions = buildList {
             player.videoTracks?.filter { it.id >= 0 }?.forEach { add(Triple("video", it.id, it.name)) }
             player.audioTracks?.filter { it.id >= 0 }?.forEach { add(Triple("audio", it.id, it.name)) }
@@ -227,7 +239,7 @@ internal class VlcFallbackPlayer(
             media?.release()
         }
         trackTargets.clear()
-        return descriptions.mapIndexed { target, (kind, id, name) ->
+        cachedTracks = descriptions.mapIndexed { target, (kind, id, name) ->
             trackTargets[target] = when (kind) {
                 "video" -> VlcTrackTarget.Video(id)
                 "audio" -> VlcTrackTarget.Audio(id)
@@ -256,15 +268,16 @@ internal class VlcFallbackPlayer(
         player.release()
         libVlc.release()
         trackTargets.clear()
+        cachedTracks = emptyList()
     }
 }
 
-internal data class VlcFallbackConfig(
+internal data class VlcPlayerConfig(
     val uri: String,
     val autoplay: Boolean,
     val initialVolume: Float,
     val startPositionMs: Long?,
-    val networkCachingMs: Int,
+    val networkCachingMs: Int?,
     val userAgent: String?,
     val referrer: String?,
     val cookies: String?,
@@ -303,11 +316,13 @@ private sealed class VlcTrackTarget(open val id: Int) {
     data class Subtitle(override val id: Int) : VlcTrackTarget(id)
 }
 
-private fun buildLibVlcOptions(config: VlcFallbackConfig): List<String> = buildList {
+private fun buildLibVlcOptions(config: VlcPlayerConfig): List<String> = buildList {
     add("--no-video-title-show")
-    add("--network-caching=${config.networkCachingMs}")
-    add("--file-caching=${config.networkCachingMs}")
-    add("--live-caching=${config.networkCachingMs}")
+    config.networkCachingMs?.let {
+        add("--network-caching=$it")
+        add("--file-caching=$it")
+        add("--live-caching=$it")
+    }
     add("--codec=mediacodec_ndk,mediacodec_jni,avcodec,all")
     config.caFile?.parentFile?.let { add("--gnutls-dir-trust=${it.absolutePath}") }
 }

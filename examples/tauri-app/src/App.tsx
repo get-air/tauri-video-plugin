@@ -147,12 +147,6 @@ export default function App() {
           onError={(reason) => setError(reason.message)}
           options={{
             backend: requestedBackend,
-            bufferAheadSeconds: 20,
-            platform: {
-              androidTv: {
-                buffer: { minSeconds: 14, maxSeconds: 50, playSeconds: 3, rebufferSeconds: 8, maxBytes: 96 * 1024 * 1024 },
-              },
-            },
           }}
         >
           <div className="tv-overlay"><img src="/overlay-badge.svg" alt="" /> HTML overlay</div>
@@ -164,7 +158,7 @@ export default function App() {
 
   const videoTrack = telemetry.media.tracks.find((track) => track.kind === 'video' && track.selected)
   const audioTrack = telemetry.media.tracks.find((track) => track.kind === 'audio' && track.selected)
-  const hardware = controller?.sessionId.includes('native') ? 'Native surface' : 'Compatibility path'
+  const hardware = 'Native surface'
   const backendName = formatBackend(activeBackend, requestedBackend)
   const container = telemetry.media.container && telemetry.media.container !== 'unknown'
     ? telemetry.media.container

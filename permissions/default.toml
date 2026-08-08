@@ -1,14 +1,6 @@
 [default]
-description = "Create and control bounded video sessions, inspect tracks, seek, and read sanitized playback statistics"
+description = "Open and control the native video player, update its layout, and read playback statistics"
 permissions = [
-  "allow-runtime-capabilities",
-  "allow-create-session",
-  "allow-set-playback-state",
-  "allow-seek",
-  "allow-select-track",
-  "allow-update-visibility",
-  "allow-session-stats",
-  "allow-destroy-session",
   "allow-native-open",
   "allow-native-control",
   "allow-native-layout",

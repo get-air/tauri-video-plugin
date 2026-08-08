@@ -116,7 +116,6 @@ export function NativeMediaPlayer({
     element.addEventListener('volumechange', persistAudio)
     const abort = new AbortController()
     let cancelled = false
-    let interval: number | undefined
 
     const refresh = () => {
       const controller = controllerRef.current
@@ -151,15 +150,11 @@ export function NativeMediaPlayer({
           autoplay: false,
           deviceProfile: 'auto',
           signal: abort.signal,
-          bufferAheadSeconds: 20,
           platform: {
             android: {
-              buffer: { minSeconds: 12, maxSeconds: 45, playSeconds: 2.5, rebufferSeconds: 6, maxBytes: 96 * 1024 * 1024 },
               decoderFallback: true,
               dolbyVision: 'hevc-base-layer',
             },
-            linux: { buffer: { maxSeconds: 20, maxBytes: 128 * 1024 * 1024 } },
-            windows: { buffer: { maxSeconds: 20, maxBytes: 128 * 1024 * 1024 } },
           },
         })
         if (cancelled) {
@@ -175,7 +170,6 @@ export function NativeMediaPlayer({
         controller.addEventListener('bufferprogress', refresh)
         controller.addEventListener('trackchange', refresh)
         controller.addEventListener('error', handleControllerError)
-        interval = window.setInterval(refresh, 250)
         refresh()
         setLoading(false)
         await controller.play()
@@ -203,7 +197,6 @@ export function NativeMediaPlayer({
       abort.abort()
       persistAudio()
       element.removeEventListener('volumechange', persistAudio)
-      if (interval !== undefined) window.clearInterval(interval)
       const controller = controllerRef.current
       controllerRef.current = null
       onController(null)

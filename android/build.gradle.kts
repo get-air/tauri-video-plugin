@@ -5,19 +5,12 @@ plugins {
 
 val tauriVideoCaAssets = layout.buildDirectory.dir("generated/tauriVideoCaAssets")
 val stageTauriVideoCaBundle by tasks.registering {
-    val gstreamerRoot = providers.environmentVariable("GSTREAMER_ROOT_ANDROID")
     val extraCa = providers.environmentVariable("TAURI_VIDEO_EXTRA_CA")
-    val defaultCa = layout.projectDirectory.file("src/main/assets/tauri-video-ca-certificates.crt")
-    val bundledCaPath = gstreamerRoot
-        .map { "$it/arm64/etc/ssl/certs/ca-certificates.crt" }
-        .orElse(defaultCa.asFile.absolutePath)
     val output = tauriVideoCaAssets.map { it.file("tauri-video-ca-certificates.crt") }
-    inputs.property("tauriVideoBundledCa", bundledCaPath)
     inputs.property("tauriVideoExtraCa", extraCa.orElse(""))
     outputs.file(output)
     doLast {
         val sources = listOfNotNull(
-            bundledCaPath.orNull?.takeIf(String::isNotBlank),
             extraCa.orNull?.takeIf(String::isNotBlank),
         ).map(::file).distinct().filter { it.isFile }
         val destination = output.get().asFile
@@ -71,14 +64,16 @@ android {
 
 tasks.named("preBuild").configure { dependsOn(stageTauriVideoCaBundle) }
 
+val media3Version = "1.10.1"
+
 dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.annotation:annotation:1.9.1")
-    implementation("androidx.media3:media3-exoplayer:1.8.0")
-    implementation("androidx.media3:media3-exoplayer-dash:1.8.0")
-    implementation("androidx.media3:media3-exoplayer-hls:1.8.0")
-    implementation("androidx.media3:media3-datasource-okhttp:1.8.0")
-    implementation("androidx.media3:media3-ui:1.8.0")
+    implementation("androidx.media3:media3-exoplayer:$media3Version")
+    implementation("androidx.media3:media3-exoplayer-dash:$media3Version")
+    implementation("androidx.media3:media3-exoplayer-hls:$media3Version")
+    implementation("androidx.media3:media3-datasource-okhttp:$media3Version")
+    implementation("androidx.media3:media3-ui:$media3Version")
     implementation("org.videolan.android:libvlc-all:3.7.5") {
         // LibVLC is Java/JNI; use the host app's Kotlin runtime instead of
         // forcing its newer compiler metadata into Tauri's Android build.

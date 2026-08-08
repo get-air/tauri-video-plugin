@@ -11,4 +11,4 @@ npm run tauri dev
 
 Paste any reachable HTTP(S) video URL into the source field or choose a free Sintel sample. Append `?tv=1` (or set `VITE_VIDEO_TV=1`) to use the Android TV player with spatial navigation.
 
-Android project files are generated under `src-tauri/gen/android`. Install the GStreamer Android SDK and follow [`../../docs/android.md`](../../docs/android.md) before building the compatibility backend.
+Android project files are generated under `src-tauri/gen/android`. Follow [`../../docs/android.md`](../../docs/android.md) for Media3 and the optional explicit LibVLC backend.

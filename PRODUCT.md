@@ -8,7 +8,7 @@ adaptive
 
 ## Users
 
-React and TypeScript developers building Tauri media applications for Windows, Linux, Android mobile, and Android TV. They need native playback performance while retaining HTML/CSS layout, overlays, and application chrome.
+React and TypeScript developers building Tauri media applications for Linux, Android mobile, and Android TV. They need native playback performance while retaining HTML/CSS layout, overlays, and application chrome.
 
 ## Product Purpose
 
@@ -28,7 +28,7 @@ Developers install the Rust and npm packages, attach playback to a positioned vi
 - Prefer hardware decoding and direct native presentation; avoid decoded-frame copies in the normal path.
 - Support MP4, WebM, Ogg, MKV, and other containers supported by the active native backend.
 - Expose audio, subtitle, and video track selection plus playback and buffer telemetry.
-- Keep the headless API platform-neutral while allowing Android, Android TV, Linux, and Windows-specific tuning.
+- Keep the headless API platform-neutral while allowing Android, Android TV, and Linux-specific tuning.
 - Android TV controls must use spatial focus navigation and must not seek merely because focus moves left or right.
 - The example must not imply that Windows support or package publication is complete before qualification and release actually occur.
 

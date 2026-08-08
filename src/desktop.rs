@@ -229,7 +229,6 @@ mod linux {
     fn select_backend(requested: Option<&str>) -> Result<Backend> {
         match requested.unwrap_or("auto") {
             "auto" if cfg!(feature = "gstreamer-runtime") => Ok(Backend::Gstreamer),
-            "auto" if cfg!(feature = "mpv-runtime") => Ok(Backend::Mpv),
             "gstreamer" if cfg!(feature = "gstreamer-runtime") => Ok(Backend::Gstreamer),
             "mpv" if cfg!(feature = "mpv-runtime") => Ok(Backend::Mpv),
             "gstreamer" => Err(Error::RuntimeUnavailable(
@@ -239,7 +238,7 @@ mod linux {
                 "the mpv backend was not compiled; enable mpv-runtime".into(),
             )),
             "auto" => Err(Error::RuntimeUnavailable(
-                "no Linux native backend was compiled".into(),
+                "the default gstreamer backend was not compiled; request 'mpv' explicitly or enable gstreamer-runtime".into(),
             )),
             backend => Err(Error::InvalidRequest(format!(
                 "backend '{backend}' is not available on Linux"
@@ -254,6 +253,20 @@ mod linux {
         #[test]
         fn explicit_mobile_backend_is_rejected_on_linux() {
             assert!(select_backend(Some("libvlc")).is_err());
+        }
+
+        #[cfg(feature = "gstreamer-runtime")]
+        #[test]
+        fn auto_selects_gstreamer() {
+            assert_eq!(select_backend(Some("auto")).unwrap(), Backend::Gstreamer);
+        }
+
+        #[cfg(feature = "mpv-runtime")]
+        #[test]
+        fn mpv_requires_an_explicit_request() {
+            assert_eq!(select_backend(Some("mpv")).unwrap(), Backend::Mpv);
+            #[cfg(not(feature = "gstreamer-runtime"))]
+            assert!(select_backend(Some("auto")).is_err());
         }
     }
 }
@@ -368,8 +381,15 @@ mod linux_surface {
 
 #[cfg(all(target_os = "linux", feature = "gstreamer-runtime"))]
 mod linux_gstreamer {
-    use std::{cell::RefCell, collections::BTreeSet, sync::Arc, time::Instant};
+    use std::{
+        cell::RefCell,
+        collections::BTreeSet,
+        str::FromStr,
+        sync::{Arc, OnceLock},
+        time::Instant,
+    };
 
+    use gst::glib::prelude::Cast as GstCast;
     use gst::glib::translate::ToGlibPtr as GstToGlibPtr;
     use gst::prelude::ObjectExt as GstObjectExt;
     use gst::prelude::*;
@@ -381,11 +401,12 @@ mod linux_gstreamer {
     use crate::{
         models::{
             NativeControlRequest, NativeLayoutRequest, NativeOpenRequest, NativePlaybackSnapshot,
-            NativeSessionRequest, NativeTrackInfo, TrackKind, VideoSource,
+            NativeSessionRequest, NativeTrackInfo, TrackKind,
         },
-        pipeline::configure_source,
         Error, Result,
     };
+
+    static GST_INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 
     thread_local! {
         static PLAYER: RefCell<Option<NativePlayer>> = const { RefCell::new(None) };
@@ -396,8 +417,11 @@ mod linux_gstreamer {
         pipeline: gst::Element,
         gtk_sink: gst::Element,
         widget: gtk::Widget,
-        source: Arc<RwLock<VideoSource>>,
+        source: Arc<RwLock<NativeOpenRequest>>,
         buffering_percent: i32,
+        buffer_duration_seconds: Option<f64>,
+        target_buffer_bytes: Option<u64>,
+        desired_playing: bool,
         error: Option<String>,
         last_rendered: u64,
         last_sample_at: Instant,
@@ -410,7 +434,7 @@ mod linux_gstreamer {
         app: &AppHandle<R>,
         payload: NativeOpenRequest,
     ) -> Result<NativePlaybackSnapshot> {
-        crate::runtime::initialize()?;
+        initialize_gstreamer()?;
         super::linux_surface::ensure_host(app)?;
 
         PLAYER.with(|slot| {
@@ -427,25 +451,89 @@ mod linux_gstreamer {
         })
     }
 
+    fn initialize_gstreamer() -> Result<()> {
+        GST_INIT
+            .get_or_init(|| gst::init().map_err(|error| error.to_string()))
+            .clone()
+            .map_err(Error::RuntimeUnavailable)
+    }
+
+    fn configure_source(element: &gst::Element, source: &NativeOpenRequest) {
+        if let Some(user_agent) = source.user_agent.as_deref() {
+            if element.find_property("user-agent").is_some() {
+                element.set_property("user-agent", user_agent);
+            }
+        }
+        if element.find_property("timeout").is_some() {
+            element.set_property("timeout", 60u32);
+        }
+        if let Some(cookies) = &source.cookies {
+            if element.find_property("cookies").is_some() {
+                let cookies = gst::glib::StrV::from([cookies.as_str()]);
+                element.set_property("cookies", cookies);
+            }
+        }
+        if let Some(ca_file) = source.tls_ca_file.as_deref() {
+            if element.find_property("tls-database").is_some() {
+                match gio::TlsFileDatabase::new(ca_file) {
+                    Ok(database) => element.set_property("tls-database", database),
+                    Err(error) => tracing::error!(%error, %ca_file, "failed to load TLS CA file"),
+                }
+            } else if element.find_property("ssl-ca-file").is_some() {
+                element.set_property("ssl-ca-file", ca_file);
+            }
+        }
+        if element.find_property("extra-headers").is_some()
+            && (!source.headers.is_empty() || source.referrer.is_some())
+        {
+            let mut headers = gst::Structure::new_empty("request-headers");
+            for (name, value) in &source.headers {
+                headers.set(name, value);
+            }
+            if let Some(referrer) = &source.referrer {
+                if !source
+                    .headers
+                    .keys()
+                    .any(|name| name.eq_ignore_ascii_case("referer"))
+                {
+                    headers.set("Referer", referrer);
+                }
+            }
+            element.set_property("extra-headers", headers);
+        }
+    }
+
     fn create_player(payload: &NativeOpenRequest) -> Result<NativePlayer> {
-        let source = Arc::new(RwLock::new(source_from_request(payload)));
+        let source = Arc::new(RwLock::new(payload.clone()));
 
         let gtk_sink = gst::ElementFactory::make("gtkglsink")
             .property("force-aspect-ratio", true)
             .property("sync", true)
+            .property("enable-last-sample", false)
             .build()
             .map_err(|error| Error::Pipeline(format!("gtkglsink is unavailable: {error}")))?;
+        let terminal_sink = subtitle_safe_gtk_sink(&gtk_sink)?;
         let gl_sink = gst::ElementFactory::make("glsinkbin")
-            .property("sink", &gtk_sink)
+            .property("sink", &terminal_sink)
             .build()
             .map_err(|error| Error::Pipeline(format!("glsinkbin is unavailable: {error}")))?;
-        let buffer_duration_ns = i64::from(payload.max_buffer_ms.unwrap_or(20_000)) * 1_000_000;
-        let ring_buffer_bytes = payload.target_buffer_bytes.unwrap_or(128 * 1024 * 1024);
-        let pipeline = gst::ElementFactory::make("playbin3")
+        let buffer_duration_seconds = payload
+            .max_buffer_ms
+            .map(|value| f64::from(value.clamp(3_000, 120_000)) / 1_000.0);
+        let target_buffer_bytes = payload
+            .target_buffer_bytes
+            .map(|value| value.clamp(4 * 1024 * 1024, i32::MAX as u64));
+        let mut pipeline_builder = gst::ElementFactory::make("playbin3")
             .property("uri", &payload.uri)
-            .property("video-sink", &gl_sink)
-            .property("buffer-duration", buffer_duration_ns)
-            .property("ring-buffer-max-size", ring_buffer_bytes)
+            .property("video-sink", &gl_sink);
+        if let Some(seconds) = buffer_duration_seconds {
+            pipeline_builder =
+                pipeline_builder.property("buffer-duration", (seconds * 1_000_000_000.0) as i64);
+        }
+        if let Some(bytes) = target_buffer_bytes {
+            pipeline_builder = pipeline_builder.property("buffer-size", bytes as i32);
+        }
+        let pipeline = pipeline_builder
             .build()
             .map_err(|error| Error::Pipeline(format!("playbin3 is unavailable: {error}")))?;
 
@@ -479,6 +567,9 @@ mod linux_gstreamer {
             widget,
             source,
             buffering_percent: 0,
+            buffer_duration_seconds,
+            target_buffer_bytes,
+            desired_playing: payload.autoplay,
             error: None,
             last_rendered: 0,
             last_sample_at: Instant::now(),
@@ -488,6 +579,53 @@ mod linux_gstreamer {
         };
         load_source(&mut player, payload)?;
         Ok(player)
+    }
+
+    fn subtitle_safe_gtk_sink(gtk_sink: &gst::Element) -> Result<gst::Element> {
+        let (major, minor, _, _) = gst::version();
+        if (major, minor) < (1, 26) {
+            return Ok(gtk_sink.clone());
+        }
+        let compositor = match gst::ElementFactory::make("gloverlaycompositor").build() {
+            Ok(compositor) => compositor,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "gloverlaycompositor is unavailable; GStreamer subtitles may flicker"
+                );
+                return Ok(gtk_sink.clone());
+            }
+        };
+        let flattened_caps =
+            gst::Caps::from_str("video/x-raw(memory:GLMemory),format=(string)RGBA")
+                .map_err(|error| Error::Pipeline(error.to_string()))?;
+        let caps_filter = gst::ElementFactory::make("capsfilter")
+            // Excluding GstVideoOverlayCompositionMeta here prevents
+            // gloverlaycompositor passthrough. Captions are flattened into the
+            // GL texture before gtkglsink's redraw path can lose the metadata.
+            .property("caps", flattened_caps)
+            .build()
+            .map_err(|error| Error::Pipeline(error.to_string()))?;
+        let sink_bin = gst::Bin::new();
+        sink_bin
+            .add_many([&compositor, &caps_filter, gtk_sink])
+            .map_err(|error| Error::Pipeline(error.to_string()))?;
+        gst::Element::link_many([&compositor, &caps_filter, gtk_sink])
+            .map_err(|error| Error::Pipeline(error.to_string()))?;
+        let compositor_sink = compositor
+            .static_pad("sink")
+            .ok_or_else(|| Error::Pipeline("gloverlaycompositor has no sink pad".into()))?;
+        let ghost = gst::GhostPad::builder_with_target(&compositor_sink)
+            .map_err(|error| Error::Pipeline(error.to_string()))?
+            .name("sink")
+            .build();
+        ghost
+            .set_active(true)
+            .map_err(|error| Error::Pipeline(error.to_string()))?;
+        sink_bin
+            .add_pad(&ghost)
+            .map_err(|error| Error::Pipeline(error.to_string()))?;
+        Ok(GstCast::upcast(sink_bin))
     }
 
     fn load_source(player: &mut NativePlayer, payload: &NativeOpenRequest) -> Result<()> {
@@ -514,16 +652,24 @@ mod linux_gstreamer {
             while bus.pop().is_some() {}
         }
 
-        *player.source.write() = source_from_request(payload);
-        let buffer_duration_ns = i64::from(payload.max_buffer_ms.unwrap_or(20_000)) * 1_000_000;
-        let ring_buffer_bytes = payload.target_buffer_bytes.unwrap_or(128 * 1024 * 1024);
+        *player.source.write() = payload.clone();
+        let buffer_duration_seconds = payload
+            .max_buffer_ms
+            .map(|value| f64::from(value.clamp(3_000, 120_000)) / 1_000.0);
+        let target_buffer_bytes = payload
+            .target_buffer_bytes
+            .map(|value| value.clamp(4 * 1024 * 1024, i32::MAX as u64));
         player.pipeline.set_property("uri", &payload.uri);
-        player
-            .pipeline
-            .set_property("buffer-duration", buffer_duration_ns);
-        player
-            .pipeline
-            .set_property("ring-buffer-max-size", ring_buffer_bytes);
+        player.pipeline.set_property(
+            "buffer-duration",
+            buffer_duration_seconds
+                .map(|seconds| (seconds * 1_000_000_000.0) as i64)
+                .unwrap_or(-1),
+        );
+        player.pipeline.set_property(
+            "buffer-size",
+            target_buffer_bytes.map(|bytes| bytes as i32).unwrap_or(-1),
+        );
         player.pipeline.set_property(
             "volume",
             if payload.muted {
@@ -542,6 +688,9 @@ mod linux_gstreamer {
         )?;
 
         player.buffering_percent = 0;
+        player.buffer_duration_seconds = buffer_duration_seconds;
+        player.target_buffer_bytes = target_buffer_bytes;
+        player.desired_playing = payload.autoplay;
         player.error = None;
         player.last_rendered = rendered_frames(&player.gtk_sink);
         player.last_sample_at = Instant::now();
@@ -562,18 +711,6 @@ mod linux_gstreamer {
         Ok(())
     }
 
-    fn source_from_request(payload: &NativeOpenRequest) -> VideoSource {
-        VideoSource {
-            uri: payload.uri.clone(),
-            headers: payload.headers.clone(),
-            cookies: payload.cookies.clone(),
-            user_agent: payload.user_agent.clone(),
-            referrer: payload.referrer.clone(),
-            tls_ca_file: payload.tls_ca_file.clone(),
-            start_position_seconds: None,
-        }
-    }
-
     fn rendered_frames(gtk_sink: &gst::Element) -> u64 {
         gtk_sink
             .property::<gst::Structure>("stats")
@@ -590,12 +727,14 @@ mod linux_gstreamer {
             ensure_session(&player.session_key, &payload.session_key)?;
             match payload.action.as_str() {
                 "play" => {
+                    player.desired_playing = true;
                     player
                         .pipeline
                         .set_state(gst::State::Playing)
                         .map_err(|error| Error::Pipeline(error.to_string()))?;
                 }
                 "pause" => {
+                    player.desired_playing = false;
                     player
                         .pipeline
                         .set_state(gst::State::Paused)
@@ -658,7 +797,7 @@ mod linux_gstreamer {
                 .ok_or_else(|| Error::InvalidRequest("native player is not open".into()))?;
             ensure_session(&player.session_key, &payload.session_key)?;
             snapshot(player).map_err(|error| {
-                eprintln!("mpv stats error: {error}");
+                tracing::debug!(%error, "GStreamer stats snapshot failed");
                 error
             })
         })
@@ -758,11 +897,13 @@ mod linux_gstreamer {
                 })
             })
             .unwrap_or((0, 0));
-        let playing = player.pipeline.current_state() == gst::State::Playing;
+        let playing = player.desired_playing;
         Ok(NativePlaybackSnapshot {
             duration_seconds: duration,
             current_time_seconds: position,
-            buffered_seconds: (position + 20.0 * player.buffering_percent as f64 / 100.0)
+            buffered_seconds: (position
+                + player.buffer_duration_seconds.unwrap_or(0.0) * player.buffering_percent as f64
+                    / 100.0)
                 .min(duration.max(position)),
             playing,
             video_width,
@@ -772,7 +913,9 @@ mod linux_gstreamer {
             dropped_frames: dropped,
             measured_fps: player.measured_fps,
             hardware_backend: "gstreamer-va-gl-gtk".into(),
-            encoded_bytes_buffered: 0,
+            encoded_bytes_buffered: player.target_buffer_bytes.map_or(0, |target| {
+                target.saturating_mul(player.buffering_percent.max(0) as u64) / 100
+            }),
             average_frame_processing_us: 0.0,
         })
     }
@@ -785,6 +928,15 @@ mod linux_gstreamer {
             match message.view() {
                 gst::MessageView::Buffering(buffering) => {
                     player.buffering_percent = buffering.percent();
+                    let target = if player.desired_playing && player.buffering_percent >= 100 {
+                        gst::State::Playing
+                    } else {
+                        gst::State::Paused
+                    };
+                    player
+                        .pipeline
+                        .set_state(target)
+                        .map_err(|error| Error::Pipeline(error.to_string()))?;
                 }
                 gst::MessageView::StreamCollection(message) => {
                     let collection = message.stream_collection();
@@ -947,6 +1099,29 @@ mod linux_mpv {
         kind: TrackKind,
     }
 
+    #[derive(Clone, Copy)]
+    struct MpvBufferDefaults {
+        cache_seconds: f64,
+        readahead_seconds: f64,
+        forward_bytes: i64,
+        backward_bytes: i64,
+        donate_buffer: bool,
+        hysteresis_seconds: f64,
+    }
+
+    impl MpvBufferDefaults {
+        fn read(mpv: &Mpv) -> Self {
+            Self {
+                cache_seconds: property(mpv, "cache-secs").unwrap_or(3_600_000.0),
+                readahead_seconds: property(mpv, "demuxer-readahead-secs").unwrap_or(1.0),
+                forward_bytes: property(mpv, "demuxer-max-bytes").unwrap_or(150 * 1024 * 1024),
+                backward_bytes: property(mpv, "demuxer-max-back-bytes").unwrap_or(50 * 1024 * 1024),
+                donate_buffer: property(mpv, "demuxer-donate-buffer").unwrap_or(true),
+                hysteresis_seconds: property(mpv, "demuxer-hysteresis-secs").unwrap_or(0.0),
+            }
+        }
+    }
+
     struct MpvPlayer {
         session_key: String,
         mpv: Mpv,
@@ -964,6 +1139,8 @@ mod linux_mpv {
         layout_sample_at: Cell<Instant>,
         tracks: Vec<NativeTrackInfo>,
         track_targets: Vec<TrackTarget>,
+        tracks_dirty: bool,
+        default_buffer: MpvBufferDefaults,
         error: Rc<RefCell<Option<String>>>,
     }
 
@@ -1077,6 +1254,7 @@ mod linux_mpv {
         }
         mpv.disable_deprecated_events().map_err(mpv_error)?;
         mpv.disable_event(mpv_event_id::Tick).map_err(mpv_error)?;
+        let default_buffer = MpvBufferDefaults::read(&mpv);
 
         let mut context = RenderContext::new(
             unsafe { mpv.ctx.as_mut() },
@@ -1180,6 +1358,8 @@ mod linux_mpv {
             layout_sample_at: Cell::new(Instant::now()),
             tracks: Vec::new(),
             track_targets: Vec::new(),
+            tracks_dirty: true,
+            default_buffer,
             error: render_error,
         };
         if trace {
@@ -1226,6 +1406,7 @@ mod linux_mpv {
         player.session_key.clone_from(&payload.session_key);
         player.tracks.clear();
         player.track_targets.clear();
+        player.tracks_dirty = true;
         *player.error.borrow_mut() = None;
         player.last_presented_frames = player.presented_frames.get();
         player.last_sample_at = Instant::now();
@@ -1279,15 +1460,56 @@ mod linux_mpv {
     }
 
     fn configure_buffer(player: &MpvPlayer, payload: &NativeOpenRequest) -> Result<()> {
-        let readahead = f64::from(payload.max_buffer_ms.unwrap_or(20_000)) / 1_000.0;
-        let max_bytes = payload.target_buffer_bytes.unwrap_or(128 * 1024 * 1024);
+        let (cache_seconds, readahead_seconds) = payload.max_buffer_ms.map_or(
+            (
+                player.default_buffer.cache_seconds,
+                player.default_buffer.readahead_seconds,
+            ),
+            |milliseconds| {
+                let seconds = (f64::from(milliseconds) / 1_000.0).clamp(3.0, 120.0);
+                (seconds, seconds)
+            },
+        );
+        let (forward_bytes, backward_bytes, donate_buffer) = payload.target_buffer_bytes.map_or(
+            (
+                player.default_buffer.forward_bytes,
+                player.default_buffer.backward_bytes,
+                player.default_buffer.donate_buffer,
+            ),
+            |requested| {
+                let total = requested.clamp(8 * 1024 * 1024, i64::MAX as u64);
+                let backward = (total / 4)
+                    .clamp(4 * 1024 * 1024, 16 * 1024 * 1024)
+                    .min(total / 2);
+                ((total - backward) as i64, backward as i64, false)
+            },
+        );
         player
             .mpv
-            .set_property("demuxer-readahead-secs", readahead)
+            .set_property("cache-secs", cache_seconds)
             .map_err(mpv_error)?;
         player
             .mpv
-            .set_property("demuxer-max-bytes", max_bytes.min(i64::MAX as u64) as i64)
+            .set_property("demuxer-readahead-secs", readahead_seconds)
+            .map_err(mpv_error)?;
+        player
+            .mpv
+            .set_property("demuxer-max-bytes", forward_bytes)
+            .map_err(mpv_error)?;
+        player
+            .mpv
+            .set_property("demuxer-max-back-bytes", backward_bytes)
+            .map_err(mpv_error)?;
+        player
+            .mpv
+            .set_property("demuxer-donate-buffer", donate_buffer)
+            .map_err(mpv_error)?;
+        player
+            .mpv
+            .set_property(
+                "demuxer-hysteresis-secs",
+                player.default_buffer.hysteresis_seconds,
+            )
             .map_err(mpv_error)?;
         Ok(())
     }
@@ -1442,6 +1664,7 @@ mod linux_mpv {
             player.session_key.clear();
             player.tracks.clear();
             player.track_targets.clear();
+            player.tracks_dirty = true;
             *player.error.borrow_mut() = None;
             Ok(())
         })
@@ -1452,7 +1675,10 @@ mod linux_mpv {
         if let Some(error) = player.error.borrow().clone() {
             return Err(Error::Pipeline(error));
         }
-        refresh_tracks(player);
+        if player.tracks_dirty {
+            refresh_tracks(player);
+            player.tracks_dirty = false;
+        }
         let position = property::<f64>(&player.mpv, "time-pos")
             .unwrap_or(0.0)
             .max(0.0);
@@ -1577,7 +1803,7 @@ mod linux_mpv {
             TrackKind::Audio => "aid",
             TrackKind::Subtitle => "sid",
         };
-        if enabled {
+        let result = if enabled {
             player
                 .mpv
                 .set_property(property, target.mpv_id)
@@ -1587,7 +1813,11 @@ mod linux_mpv {
                 .mpv
                 .set_property(property, "no".to_owned())
                 .map_err(mpv_error)
+        };
+        if result.is_ok() {
+            player.tracks_dirty = true;
         }
+        result
     }
 
     fn drain_events(player: &mut MpvPlayer) -> Result<()> {
@@ -1603,6 +1833,10 @@ mod linux_mpv {
                 error
             })? {
                 Event::Shutdown => return Err(Error::Pipeline("mpv shut down".into())),
+                Event::StartFile
+                | Event::FileLoaded
+                | Event::VideoReconfig
+                | Event::AudioReconfig => player.tracks_dirty = true,
                 Event::EndFile(_) => {}
                 _ => {}
             }

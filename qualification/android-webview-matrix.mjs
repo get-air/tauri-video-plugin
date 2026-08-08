@@ -95,9 +95,9 @@ const browserSample = `(async () => {
   return {
     currentTime: snapshot.currentTime,
     duration: snapshot.duration,
-    paused: stats.state !== 'playing',
+    paused: !stats.playing,
     readyState: 4,
-    state: stats.state || '',
+    state: stats.playing ? 'playing' : 'paused',
     backend: stats.hardwareBackend || '',
     error: document.querySelector('.tvp-error')?.textContent?.trim() || '',
     fpsBadge: snapshot.quality ? snapshot.quality.measuredFps.toFixed(2) : '',

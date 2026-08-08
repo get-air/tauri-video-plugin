@@ -4,7 +4,7 @@ Run date: 2026-08-04
 
 ## Current result
 
-Android now uses two direct native rendering paths: Media3/MediaCodec for formats the platform decoder can handle and LibVLC on the same `SurfaceView` plane for compatibility formats. Both an Android TV emulator and a constrained phone emulator progressively played all 20 HTTPS fixtures. The fixtures include MKV, WebM, AVI, MOV, and MPEG-TS with codecs and track layouts that previously produced audio-only playback or failed during initialization.
+Android has two explicitly selectable direct native rendering paths: Media3/MediaCodec and LibVLC on the same `SurfaceView` plane. Both an Android TV emulator and a constrained phone emulator progressively played all 20 HTTPS fixtures across the two selected modes.
 
 No test downloaded a complete file before playback, converted video in JavaScript, or passed decoded frames through canvas. The final regression was emulator-only. No physical device was used after the user requested emulator-only testing.
 
@@ -16,7 +16,7 @@ This remains a developer preview. Windows and physical ARM hardware are not qual
 | --- | --- | --- |
 | Linux | GStreamer `playbin3` → VA-API → `glsinkbin`/`gtkglsink` | 0 |
 | Android fast path | Media3 extractor → MediaCodec → `SurfaceView` | 0 |
-| Android compatibility path | LibVLC demux/decode → `VLCVideoLayout`/`SurfaceView` | 0 |
+| Android explicit LibVLC | LibVLC demux/decode → `VLCVideoLayout`/`SurfaceView` | 0 |
 
 React renders controls and overlays in the transparent WebView above the native video plane. It never receives decoded video frames.
 
@@ -47,11 +47,11 @@ Both Android profiles presented real video frames for all 20 cases:
 - FFV1/FLAC MKV;
 - MJPEG/PCM AVI.
 
-The matrix now rejects audio-only false positives by requiring the browser-reported presented-video-frame counter to advance. Formats supported by the emulator stayed on MediaCodec. Unsupported formats switched to LibVLC instead of reporting a successful black or audio-only player.
+The matrix rejects audio-only false positives by requiring the browser-reported presented-video-frame counter to advance. Formats supported by the emulator were tested on MediaCodec. Other formats were tested by explicitly selecting LibVLC; the current plugin does not switch engines automatically.
 
 ## Controls, tracks, layout, and overlays
 
-The TV fast-path control run passed audio and subtitle selection, absolute seek, volume, zoom, fullscreen, buffer telemetry, HTML/SVG overlay visibility, scroll-follow layout, and D-pad focus without accidental seeking. The compatibility-path control run passed seek, volume, overlay visibility, fullscreen, and scroll-follow layout on the same native surface. The constrained phone run passed track selection, subtitles, seek, volume, overlay, fullscreen, and scroll-follow with zero reported drops during the interaction sequence.
+The TV Media3 control run passed audio and subtitle selection, absolute seek, volume, zoom, fullscreen, buffer telemetry, HTML/SVG overlay visibility, scroll-follow layout, and D-pad focus without accidental seeking. The explicit LibVLC control run passed seek, volume, overlay visibility, fullscreen, and scroll-follow layout on the same native surface. The constrained phone run passed track selection, subtitles, seek, volume, overlay, fullscreen, and scroll-follow with zero reported drops during the interaction sequence.
 
 Native commands carry a session key. Delayed React cleanup from a prior controller can no longer close or control a replacement native surface.
 
@@ -65,11 +65,11 @@ The APK build verifies that the bundled CA asset is staged even when only `TAURI
 
 The Android TV MediaCodec soak ran for 20 seconds at 29.91 average presented FPS for a 30 FPS source, with 0 dropped frames, 29.33 minimum sampled FPS, 234.6 MiB maximum process PSS, 26.8 MiB maximum encoded-buffer allocation, and at least 23.1 seconds of reserve.
 
-The Android TV LibVLC compatibility soak ran for 20 seconds at 24.43 average presented FPS for a 24 FPS source, advanced 20.14 seconds, and reported 0 dropped frames. Maximum PSS was 277.1 MiB and minimum estimated reserve was 7.8 seconds. One instantaneous FPS sample fell to 14.0 because the counter is sampled over short asynchronous windows. Average cadence and the zero-drop counter were healthy, but the saved run is correctly marked failed against its strict 18 FPS minimum-sample threshold.
+The Android TV explicit LibVLC soak ran for 20 seconds at 24.43 average presented FPS for a 24 FPS source, advanced 20.14 seconds, and reported 0 dropped frames. Maximum PSS was 277.1 MiB and minimum estimated reserve was 7.8 seconds. One instantaneous FPS sample fell to 14.0 because the counter is sampled over short asynchronous windows. Average cadence and the zero-drop counter were healthy, but the saved run is correctly marked failed against its strict 18 FPS minimum-sample threshold.
 
 The constrained phone MediaCodec soak ran for 15 seconds at 29.75 average presented FPS, 28.43 minimum sampled FPS, 0 dropped frames, 230.0 MiB maximum process PSS, 27.4 MiB maximum encoded allocation, and at least 29 seconds of reserve.
 
-In the full constrained-phone matrix, the hardest software compatibility fixtures incurred one or two drops while still sustaining source cadence. Production 4K HDR/Dolby Vision performance remains an ARM hardware qualification gate; x86 emulator software-decoder results must not be represented as physical TV performance.
+In the full constrained-phone matrix, the hardest LibVLC fixtures incurred one or two drops while still sustaining source cadence. Production 4K HDR/Dolby Vision performance remains an ARM hardware qualification gate; x86 emulator software-decoder results must not be represented as physical TV performance.
 
 ## Automated checks
 
