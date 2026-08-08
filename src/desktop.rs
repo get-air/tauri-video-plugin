@@ -1,8 +1,5 @@
 use serde::de::DeserializeOwned;
-use std::{
-    sync::{mpsc, Arc, Mutex},
-    time::Duration,
-};
+use std::{sync::mpsc, time::Duration};
 use tauri::{plugin::PluginApi, AppHandle, Runtime};
 
 use crate::models::{
@@ -24,28 +21,9 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
             job(&context);
             gtk::glib::ControlFlow::Continue
         });
-        let pending_layout = Arc::new(Mutex::new(None::<NativeLayoutRequest>));
-        let pending_on_main = Arc::clone(&pending_layout);
-        #[allow(deprecated)]
-        let (layout_sender, layout_receiver) =
-            gtk::glib::MainContext::sync_channel::<()>(gtk::glib::Priority::DEFAULT, 1);
-        layout_receiver.attach(None, move |_| {
-            let payload = pending_on_main
-                .lock()
-                .ok()
-                .and_then(|mut pending| pending.take());
-            if let Some(payload) = payload {
-                if let Err(error) = linux::layout(payload) {
-                    eprintln!("native layout update failed: {error}");
-                }
-            }
-            gtk::glib::ControlFlow::Continue
-        });
         Ok(DesktopVideo {
             _app: app.clone(),
             main_sender,
-            layout_sender,
-            pending_layout,
         })
     }
     #[cfg(not(target_os = "linux"))]
@@ -61,10 +39,6 @@ pub struct DesktopVideo<R: Runtime> {
     _app: AppHandle<R>,
     #[cfg(target_os = "linux")]
     main_sender: gtk::glib::SyncSender<MainJob<R>>,
-    #[cfg(target_os = "linux")]
-    layout_sender: gtk::glib::SyncSender<()>,
-    #[cfg(target_os = "linux")]
-    pending_layout: Arc<Mutex<Option<NativeLayoutRequest>>>,
 }
 
 impl<R: Runtime> DesktopVideo<R> {
@@ -83,17 +57,10 @@ impl<R: Runtime> DesktopVideo<R> {
 
     #[cfg(target_os = "linux")]
     pub fn layout_native(&self, payload: NativeLayoutRequest) -> crate::Result<()> {
-        *self
-            .pending_layout
-            .lock()
-            .map_err(|_| crate::Error::Pipeline("native layout queue is unavailable".into()))? =
-            Some(payload);
-        match self.layout_sender.try_send(()) {
-            Ok(()) | Err(mpsc::TrySendError::Full(())) => Ok(()),
-            Err(mpsc::TrySendError::Disconnected(())) => Err(crate::Error::Pipeline(
-                "native layout dispatcher is unavailable".into(),
-            )),
-        }
+        // The WebView publishes its matching transparent aperture after this
+        // command resolves, so completion must mean GTK received the move.
+        // The guest serializes layout calls, keeping this dispatcher bounded.
+        self.run_on_main(move |_| linux::layout(payload))
     }
 
     #[cfg(target_os = "linux")]
@@ -948,7 +915,9 @@ mod linux_mpv {
     use gtk::prelude::*;
     use libmpv2::{
         events::{mpv_event_id, Event},
-        render::{OpenGLInitParams, RenderContext, RenderParam, RenderParamApiType},
+        render::{
+            mpv_render_update, OpenGLInitParams, RenderContext, RenderParam, RenderParamApiType,
+        },
         Mpv,
     };
     use tauri::{AppHandle, Runtime};
@@ -1091,6 +1060,10 @@ mod linux_mpv {
             init.set_option("vo", "libmpv")?;
             init.set_option("hwdec", "auto-safe")?;
             init.set_option("gpu-api", "opengl")?;
+            // GtkGLArea renders on GTK's main thread. libmpv otherwise waits
+            // here for each frame's target time (50 ms by default), delaying
+            // widget allocation and scroll-driven surface moves.
+            init.set_option("video-timing-offset", 0.0_f64)?;
             init.set_option("keep-open", "yes")?;
             init.set_option("osc", "no")?;
             init.set_option("osd-level", "0")?;
@@ -1129,13 +1102,25 @@ mod linux_mpv {
             // and Tauri command dispatch but just before GTK's redraw phase.
             let _ = redraw_sender.try_send(());
         });
+        let render_context = Rc::new(RefCell::new(Some(context)));
         let update_area = gl_area.clone();
+        let context_for_update = Rc::clone(&render_context);
         let update_source = redraw_receiver.attach(None, move |_| {
-            update_area.queue_render();
+            let update = context_for_update
+                .borrow()
+                .as_ref()
+                .ok_or_else(|| "mpv render context is closed".to_owned())
+                .and_then(|context| context.update().map_err(|error| error.to_string()));
+            match update {
+                Ok(flags) if flags & mpv_render_update::Frame != 0 => {
+                    update_area.queue_render();
+                }
+                Ok(_) => {}
+                Err(error) => eprintln!("mpv render update error: {error}"),
+            }
             gtk::glib::ControlFlow::Continue
         });
 
-        let render_context = Rc::new(RefCell::new(Some(context)));
         let presented_frames = Rc::new(Cell::new(0_u64));
         let render_error = Rc::new(RefCell::new(None));
         let context_for_render = Rc::clone(&render_context);
