@@ -10,6 +10,7 @@ import { attachVideo, type VideoController } from 'tauri-plugin-video-api/headle
 interface AttachVideoOptions {
   source: string | VideoSource
   backend?: 'auto' | 'media3' | 'libvlc' | 'gstreamer' | 'mpv'
+  surfaceMode?: 'dom' | 'transparent-canvas'
   autoplay?: boolean
   suspendWhenHidden?: boolean
   deviceProfile?: 'auto' | 'mobile' | 'tv' | 'desktop'
@@ -82,6 +83,7 @@ interface VideoController extends EventTarget {
   stats(): Promise<SessionStats>
   bufferedAhead(): number
   playbackQuality(): PlaybackQuality
+  refreshLayout(): void
   registerControls(target: Element | Iterable<Element>): () => void
   destroy(): Promise<void>
 }
@@ -127,3 +129,49 @@ The native renderer is rectangular. Border radii and rectangular overflow clips
 are recreated by the compositor, but arbitrary 3D transforms, rotation, pseudo-
 element-only masks, and custom non-rectangular CSS masks on the video anchor
 cannot be reproduced by the platform surface.
+
+## Blits canvas adapter
+
+```ts
+import {
+  attachBlitsVideo,
+  blitsVideoHole,
+  transparentBlitsSettings,
+} from 'tauri-plugin-video-api/blits'
+```
+
+`attachBlitsVideo` creates and owns an invisible `<video>` geometry anchor,
+maps Blits authored coordinates through the live canvas bounds, and selects the
+explicit `transparent-canvas` surface mode. It returns the same
+`VideoController` contract plus `anchor` and `updateLayout()`. A rect getter can
+be used for animated layouts:
+
+```ts
+const rect = { x: 426, y: 164, width: 1068, height: 600 }
+const player = await attachBlitsVideo({
+  canvas,
+  rect: () => rect,
+  source: movieUrl,
+  autoplay: true,
+})
+```
+
+Spread `transparentBlitsSettings` into `Blits.Launch`. It pins the renderer to a
+transparent clear color and keeps per-frame clearing enabled so an old opaque
+frame cannot remain in the aperture.
+
+The canvas is one composited bitmap, so DOM background reconstruction cannot
+cut through one of its opaque WebGL quads. Apply `blitsVideoHole(rect, radius)`
+to the opaque Blits background node itself:
+
+```ts
+const backgroundShader = blitsVideoHole(rect, 24)
+```
+
+Bind `backgroundShader` to that node's `shader` attribute. Render ordinary
+Blits controls afterward; their pixels naturally appear above the native video.
+No decoded video frame passes through JavaScript, WebGL, or Canvas2D.
+
+The low-level `surfaceMode: 'transparent-canvas'` option is explicit and never
+selected automatically. Prefer `attachBlitsVideo`, which also handles canvas
+scaling, lifecycle cleanup, and document transparency.

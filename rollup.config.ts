@@ -29,6 +29,7 @@ const cssAsText: Plugin = {
 const config: RollupOptions = {
   input: {
     index: 'guest-js/index.ts',
+    blits: 'blits/index.ts',
     react: 'react/index.tsx',
   },
   output: [
@@ -50,7 +51,7 @@ const config: RollupOptions = {
     typescript({
       declaration: true,
       declarationDir: 'dist-js',
-      include: ['guest-js/**/*.ts', 'react/**/*.ts', 'react/**/*.tsx'],
+      include: ['guest-js/**/*.ts', 'blits/**/*.ts', 'react/**/*.ts', 'react/**/*.tsx'],
       exclude: ['**/*.test.ts', '**/*.test.tsx'],
     }),
   ],

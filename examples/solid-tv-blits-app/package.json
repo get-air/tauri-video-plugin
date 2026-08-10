@@ -1,0 +1,22 @@
+{
+  "name": "solid-tv-blits-video-example",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@lightningjs/blits": "^2.8.7",
+    "@tauri-apps/api": "^2.0.0",
+    "tauri-plugin-video-api": "file:../../"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.0.0"
+  }
+}

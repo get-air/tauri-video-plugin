@@ -94,6 +94,12 @@ export interface AttachVideoOptions {
   source: string | VideoSource
   /** Native playback engine. Alternative engines must be requested explicitly. */
   backend?: VideoBackend
+  /**
+   * Selects who creates the transparent aperture above the native video.
+   * `dom` is the normal HTML mode. Canvas renderers must explicitly choose
+   * `transparent-canvas` and punch the matching hole in their own background.
+   */
+  surfaceMode?: 'dom' | 'transparent-canvas'
   suspendWhenHidden?: boolean
   autoplay?: boolean
   deviceProfile?: DeviceProfile
@@ -165,6 +171,8 @@ export interface VideoController extends EventTarget {
   stats(): Promise<SessionStats>
   bufferedAhead(): number
   playbackQuality(): PlaybackQuality
+  /** Re-measure the anchor and synchronize the native surface on the next frame. */
+  refreshLayout(): void
   /** Mark arbitrary DOM as this player's UI. Returns an unregister function. */
   registerControls(target: VideoControlsTarget): () => void
   destroy(): Promise<void>
@@ -484,6 +492,10 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     }
   }
 
+  refreshLayout(): void {
+    this.#requestLayout()
+  }
+
   async setVideoFit(mode: VideoFitMode): Promise<void> {
     this.#acceptSnapshot(await this.#control(mode === 'cover' ? 'crop' : mode))
   }
@@ -750,6 +762,7 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   }
 
   #claimCssSurface(): void {
+    if (this.#options.surfaceMode === 'transparent-canvas') return
     this.#compositor = new NativeSurfaceCompositor(this.#sessionKey, this.element)
   }
 

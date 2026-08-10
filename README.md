@@ -84,6 +84,47 @@ The React entry installs its scoped player styles automatically. Use
 in the page, such as a portal or application toolbar. The headless equivalent is
 `controller.registerControls(element)`.
 
+## Solid-TV / Blits
+
+Blits keeps rendering the application and controls to its normal canvas. The
+video remains a native surface underneath the WebView; it is never uploaded to
+WebGL or drawn into the canvas.
+
+```ts
+import Blits from '@lightningjs/blits'
+import {
+  attachBlitsVideo,
+  blitsVideoHole,
+  transparentBlitsSettings,
+} from 'tauri-plugin-video-api/blits'
+
+const canvas = document.querySelector<HTMLCanvasElement>('#blits-canvas')!
+const videoRect = { x: 426, y: 164, width: 1068, height: 600 }
+
+Blits.Launch(App, 'app', {
+  w: 1920,
+  h: 1080,
+  canvas,
+  ...transparentBlitsSettings,
+})
+
+const player = await attachBlitsVideo({
+  canvas,
+  rect: videoRect,
+  source: movieUrl,
+  autoplay: true,
+})
+```
+
+Apply `blitsVideoHole(videoRect, radius)` as the `shader` value on the opaque
+Blits background that covers the screen. The adapter automatically makes the
+document and canvas backing layers transparent and maps authored 1920×1080
+coordinates to the canvas's actual viewport box. UI rendered after the punched
+background—including text, subtitles, and transport controls—stays above the
+native picture.
+
+See the runnable [Solid-TV / Blits example](examples/solid-tv-blits-app).
+
 See [API](docs/api.md), [Linux](docs/linux.md), [Windows](docs/windows.md), and
 [Android](docs/android.md).
 

@@ -38,3 +38,4 @@ jobs:
         run: |
           cargo audit
           cargo audit --file examples/tauri-app/src-tauri/Cargo.lock
+          cargo audit --file examples/solid-tv-blits-app/src-tauri/Cargo.lock

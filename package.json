@@ -2,7 +2,7 @@
   "name": "tauri-plugin-video-api",
   "version": "0.1.0",
   "author": "tauri-plugin-video contributors",
-  "description": "Native, realtime MKV and broad-codec video for Tauri with headless and React APIs",
+  "description": "Native, realtime MKV and broad-codec video for Tauri with headless, React, and Blits APIs",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
@@ -37,6 +37,11 @@
       "types": "./dist-js/guest-js/index.d.ts",
       "import": "./dist-js/index.js",
       "require": "./dist-js/index.cjs"
+    },
+    "./blits": {
+      "types": "./dist-js/blits/index.d.ts",
+      "import": "./dist-js/blits.js",
+      "require": "./dist-js/blits.cjs"
     },
     "./react": {
       "types": "./dist-js/react/index.d.ts",

@@ -12,6 +12,7 @@
   },
   "include": [
     "guest-js/**/*.ts",
+    "blits/**/*.ts",
     "react/**/*",
     "scripts/**/*.ts",
     "qualification/**/*.ts",

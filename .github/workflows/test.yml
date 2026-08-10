@@ -26,6 +26,8 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav libmpv-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-targets --all-features -- --nocapture
+      - name: Compile the Solid-TV / Blits example application
+        run: cargo check --manifest-path examples/solid-tv-blits-app/src-tauri/Cargo.toml --all-targets
 
   portable-api:
     strategy:
@@ -85,6 +87,8 @@ jobs:
         run: cargo test --all-targets --no-default-features --features gstreamer-runtime --no-run
       - name: Compile the Windows example application
         run: cargo check --manifest-path examples/tauri-app/src-tauri/Cargo.toml --all-targets
+      - name: Compile the Windows Solid-TV / Blits example application
+        run: cargo check --manifest-path examples/solid-tv-blits-app/src-tauri/Cargo.toml --all-targets
 
   guest-api:
     runs-on: ubuntu-latest
@@ -102,3 +106,7 @@ jobs:
         working-directory: examples/tauri-app
       - run: npm run build
         working-directory: examples/tauri-app
+      - run: npm ci
+        working-directory: examples/solid-tv-blits-app
+      - run: npm run build
+        working-directory: examples/solid-tv-blits-app
