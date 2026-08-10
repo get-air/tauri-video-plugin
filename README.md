@@ -1,6 +1,6 @@
 # tauri-plugin-video
 
-Native video playback for Tauri on Linux, Android, and Android TV. The WebView
+Native video playback for Tauri on Linux, Windows, Android, and Android TV. The WebView
 owns layout and controls while the platform player renders directly into a
 native surface underneath it. Decoded frames never pass through JavaScript,
 canvas, a localhost media bridge, or a plugin-owned transcoder.
@@ -11,7 +11,7 @@ canvas, a localhost media bridge, or a plugin-owned transcoder.
 | --- | --- | --- |
 | Linux | GStreamer | `mpv` when compiled with `mpv-runtime` |
 | Android / TV | Media3 / MediaCodec | `libvlc` |
-| Windows | Not supported | None |
+| Windows | GStreamer | None |
 
 Alternative backends are never selected automatically. Media3's
 `decoderFallback` setting may try another installed MediaCodec decoder, but it
@@ -28,8 +28,10 @@ tauri::Builder::default()
     .run(tauri::generate_context!())?;
 ```
 
-GStreamer is the default Linux feature. To make mpv available as an explicit
-setting, install libmpv development files and enable both features:
+GStreamer is the default Linux and Windows feature. On Windows, install the
+official MSVC x86-64 GStreamer runtime and development files. To make mpv
+available as an explicit Linux setting, install libmpv development files and
+enable both features:
 
 ```toml
 tauri-plugin-video = { version = "0.1", features = ["gstreamer-runtime", "mpv-runtime"] }
@@ -82,7 +84,8 @@ The React entry installs its scoped player styles automatically. Use
 in the page, such as a portal or application toolbar. The headless equivalent is
 `controller.registerControls(element)`.
 
-See [API](docs/api.md), [Linux](docs/linux.md), and [Android](docs/android.md).
+See [API](docs/api.md), [Linux](docs/linux.md), [Windows](docs/windows.md), and
+[Android](docs/android.md).
 
 ## License
 

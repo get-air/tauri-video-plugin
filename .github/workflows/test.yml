@@ -44,6 +44,48 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-targets --no-default-features
 
+  windows-native:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    env:
+      GSTREAMER_VERSION: 1.28.6
+      GSTREAMER_SHA256: 059251444d1267b486eba390b18d25fed87e10315e72f757ec6c7e912fa746b5
+      GSTREAMER_ROOT: ${{ github.workspace }}\gstreamer
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache GStreamer installer
+        id: cache-gstreamer
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\gstreamer-1.0-msvc-x86_64-${{ env.GSTREAMER_VERSION }}.exe
+          key: gstreamer-msvc-x86_64-${{ env.GSTREAMER_VERSION }}
+      - name: Download GStreamer
+        if: steps.cache-gstreamer.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $installer = "$env:RUNNER_TEMP\gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.exe"
+          Invoke-WebRequest "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GSTREAMER_VERSION/msvc/gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.exe" -OutFile $installer
+      - name: Install GStreamer runtime and development files
+        shell: pwsh
+        run: |
+          $installer = "$env:RUNNER_TEMP\gstreamer-1.0-msvc-x86_64-$env:GSTREAMER_VERSION.exe"
+          $actualHash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $env:GSTREAMER_SHA256) {
+            throw "GStreamer installer checksum mismatch: $actualHash"
+          }
+          $process = Start-Process $installer -ArgumentList "/TYPE=devel", "/CURRENTUSER", "/DIR=$env:GSTREAMER_ROOT", "/VERYSILENT", "/NORESTART" -Wait -PassThru
+          if ($process.ExitCode -notin 0, 3010) {
+            throw "GStreamer installer failed with exit code $($process.ExitCode)"
+          }
+          "$env:GSTREAMER_ROOT\bin" | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$env:GSTREAMER_ROOT" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - uses: Swatinem/rust-cache@v2
+      - name: Compile the Windows GStreamer backend
+        run: cargo test --all-targets --no-default-features --features gstreamer-runtime --no-run
+      - name: Compile the Windows example application
+        run: cargo check --manifest-path examples/tauri-app/src-tauri/Cargo.toml --all-targets
+
   guest-api:
     runs-on: ubuntu-latest
     timeout-minutes: 15

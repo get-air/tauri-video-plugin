@@ -76,6 +76,59 @@ impl<R: Runtime> DesktopVideo<R> {
         self.run_on_main(move |_| linux::close(payload))
     }
 
+    #[cfg(windows)]
+    pub fn open_native(&self, payload: NativeOpenRequest) -> crate::Result<NativePlaybackSnapshot> {
+        self.run_on_windows_main(move |app| windows::open(app, payload))
+    }
+
+    #[cfg(windows)]
+    pub fn control_native(
+        &self,
+        payload: NativeControlRequest,
+    ) -> crate::Result<NativePlaybackSnapshot> {
+        self.run_on_windows_main(move |_| windows::control(payload))
+    }
+
+    #[cfg(windows)]
+    pub fn layout_native(&self, payload: NativeLayoutRequest) -> crate::Result<()> {
+        self.run_on_windows_main(move |_| windows::layout(payload))
+    }
+
+    #[cfg(windows)]
+    pub fn stats_native(
+        &self,
+        payload: NativeSessionRequest,
+    ) -> crate::Result<NativePlaybackSnapshot> {
+        self.run_on_windows_main(move |_| windows::stats(payload))
+    }
+
+    #[cfg(windows)]
+    pub fn close_native(&self, payload: NativeSessionRequest) -> crate::Result<()> {
+        self.run_on_windows_main(move |_| windows::close(payload))
+    }
+
+    #[cfg(windows)]
+    fn run_on_windows_main<T, F>(&self, operation: F) -> crate::Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&AppHandle<R>) -> crate::Result<T> + Send + 'static,
+    {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let context = self._app.clone();
+        self._app
+            .run_on_main_thread(move || {
+                let _ = sender.send(operation(&context));
+            })
+            .map_err(|error| {
+                crate::Error::Pipeline(format!("native UI dispatcher is unavailable: {error}"))
+            })?;
+        receiver
+            .recv_timeout(Duration::from_secs(15))
+            .map_err(|error| {
+                crate::Error::Pipeline(format!("native UI thread timed out: {error}"))
+            })?
+    }
+
     #[cfg(target_os = "linux")]
     fn run_on_main<T, F>(&self, operation: F) -> crate::Result<T>
     where
@@ -97,38 +150,41 @@ impl<R: Runtime> DesktopVideo<R> {
             })?
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     fn unsupported<T>(&self) -> crate::Result<T> {
         Err(crate::Error::InvalidRequest(
-            "native desktop surfaces are currently implemented on Linux".into(),
+            "native desktop surfaces are currently implemented on Linux and Windows".into(),
         ))
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub fn open_native(&self, _: NativeOpenRequest) -> crate::Result<NativePlaybackSnapshot> {
         self.unsupported()
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub fn control_native(&self, _: NativeControlRequest) -> crate::Result<NativePlaybackSnapshot> {
         self.unsupported()
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub fn layout_native(&self, _: NativeLayoutRequest) -> crate::Result<()> {
         self.unsupported()
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub fn stats_native(&self, _: NativeSessionRequest) -> crate::Result<NativePlaybackSnapshot> {
         self.unsupported()
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub fn close_native(&self, _: NativeSessionRequest) -> crate::Result<()> {
         self.unsupported()
     }
 }
+
+#[cfg(windows)]
+mod windows;
 
 #[cfg(target_os = "linux")]
 mod linux {

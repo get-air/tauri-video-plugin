@@ -19,9 +19,8 @@ interface AttachVideoOptions {
 }
 ```
 
-`auto` selects GStreamer on Linux and Media3 on Android. `mpv` and `libvlc`
-are explicit settings; playback never switches engines after an error. Windows
-currently has no backend and `attachVideo()` rejects there.
+`auto` selects GStreamer on Linux and Windows and Media3 on Android. `mpv` and
+`libvlc` are explicit settings; playback never switches engines after an error.
 
 ```ts
 interface VideoSource {
@@ -53,6 +52,7 @@ interface PlatformPlaybackOptions {
   android?: AndroidPlaybackOptions
   androidTv?: AndroidPlaybackOptions
   linux?: { buffer?: NativeBufferOptions }
+  windows?: { buffer?: NativeBufferOptions }
 }
 ```
 

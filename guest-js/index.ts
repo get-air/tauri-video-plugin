@@ -130,11 +130,16 @@ export interface LinuxPlaybackOptions {
   buffer?: NativeBufferOptions
 }
 
+export interface WindowsPlaybackOptions {
+  buffer?: NativeBufferOptions
+}
+
 export interface PlatformPlaybackOptions {
   android?: AndroidPlaybackOptions
   /** Merged over android when deviceProfile is tv. */
   androidTv?: AndroidPlaybackOptions
   linux?: LinuxPlaybackOptions
+  windows?: WindowsPlaybackOptions
 }
 
 export interface VideoControllerEventMap {
@@ -208,8 +213,8 @@ export async function attachVideo(
   if (!(element instanceof HTMLVideoElement)) {
     throw new TypeError('attachVideo requires an HTMLVideoElement')
   }
-  if (!/Android|Linux/i.test(navigator.userAgent)) {
-    throw new Error('Native video playback is currently supported only on Android and Linux')
+  if (!/Android|Linux|Windows/i.test(navigator.userAgent)) {
+    throw new Error('Native video playback is currently supported only on Android, Linux, and Windows')
   }
   const controller = new NativeSurfaceVideoController(element, options)
   try {
@@ -885,6 +890,7 @@ function nativeOpenSettings(options: AttachVideoOptions): Record<string, unknown
   const userAgent = navigator.userAgent
   const android = /Android/i.test(userAgent)
   const linux = /Linux/i.test(userAgent) && !android
+  const windows = /Windows/i.test(userAgent)
   const tv = options.deviceProfile === 'tv'
     || ((options.deviceProfile === undefined || options.deviceProfile === 'auto')
       && /\bTV\b|AFT|BRAVIA|SHIELD|GoogleTV/i.test(userAgent))
@@ -894,6 +900,7 @@ function nativeOpenSettings(options: AttachVideoOptions): Record<string, unknown
     : undefined
   const buffer = androidOptions?.buffer
     ?? (linux ? options.platform?.linux?.buffer : undefined)
+    ?? (windows ? options.platform?.windows?.buffer : undefined)
   return {
     backend: options.backend ?? 'auto',
     minBufferMs: secondsToMilliseconds(buffer?.minSeconds),

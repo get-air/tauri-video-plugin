@@ -8,7 +8,9 @@ adaptive
 
 ## Users
 
-React and TypeScript developers building Tauri media applications for Linux, Android mobile, and Android TV. They need native playback performance while retaining HTML/CSS layout, overlays, and application chrome.
+React and TypeScript developers building Tauri media applications for Linux,
+Windows, Android mobile, and Android TV. They need native playback performance
+while retaining HTML/CSS layout, overlays, and application chrome.
 
 ## Product Purpose
 

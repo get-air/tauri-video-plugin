@@ -11,13 +11,19 @@ const configuredSource = params.get('source') ?? import.meta.env.VITE_VIDEO_SOUR
 const caFile = params.get('ca') ?? import.meta.env.VITE_VIDEO_CA_FILE
 const tvMode = params.get('tv') === '1' || import.meta.env.VITE_VIDEO_TV === '1'
 const android = /Android/i.test(navigator.userAgent)
+const windows = /Windows/i.test(navigator.userAgent)
 const backendOptions: ReadonlyArray<{ value: VideoBackend; label: string }> = android
   ? [
       { value: 'auto', label: 'Auto' },
       { value: 'media3', label: 'Media3' },
       { value: 'libvlc', label: 'LibVLC' },
     ]
-  : [
+  : windows
+    ? [
+        { value: 'auto', label: 'Auto' },
+        { value: 'gstreamer', label: 'GStreamer' },
+      ]
+    : [
       { value: 'auto', label: 'Auto' },
       { value: 'gstreamer', label: 'GStreamer' },
       { value: 'mpv', label: 'mpv' },
