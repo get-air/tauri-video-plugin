@@ -1,8 +1,17 @@
-# Air video for Tauri
+# Tauri platform for Air video
 
-Native playback for Tauri 2 using the same
-[`@get-air/video`](https://github.com/get-air/video) API. Video renders on a
-native surface while the DOM owns layout, controls, and overlays.
+This repository is the Tauri platform implementation for
+[`@get-air/video`](https://github.com/get-air/video), not a separate player.
+It publishes both halves of the `tauri` backend:
+
+| Package | Role |
+| --- | --- |
+| `@get-air/video` | Owns the shared controller and browser/TV backends |
+| `@get-air/video-tauri` | Plugs `backend: 'tauri'` into that controller |
+| `tauri-plugin-video` | Runs the native engines behind the adapter |
+
+`createTauriVideoClient()` returns the regular `@get-air/video` client with
+the Tauri backend installed. The DOM still owns layout, controls, and overlays.
 
 ## Platform support
 
@@ -66,7 +75,23 @@ await player.play()
 
 The ordered list tries direct DOM/WebCodecs playback, then native playback,
 without changing the controller API. Use `backend: 'tauri'` to force native.
-The Effect-native entrypoint is `@get-air/video-tauri/effect`.
+
+## Core integrations
+
+All `@get-air/video` integrations can use the installed Tauri backend:
+
+| Core integration | Connect Tauri with |
+| --- | --- |
+| Promise API | `createTauriVideoClient()` |
+| Effect | `layerTauriVideoBackend()` from `@get-air/video-tauri/effect` |
+| React / TV focus | `client` prop |
+| Canvas | `client` option |
+| SolidTV | `client` option |
+| Blits | `client` option |
+
+Keep importing the framework helpers from `@get-air/video/*`; only the client
+or Effect layer comes from the Tauri adapter. Canvas, SolidTV, and Blits also
+need the transparent aperture shown in the [examples](examples).
 
 ## Compatibility
 
