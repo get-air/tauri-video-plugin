@@ -10,9 +10,10 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@get-air/video": "^0.1.0",
+    "@get-air/video-tauri": "file:../..",
     "@lightningjs/blits": "^2.8.7",
-    "@tauri-apps/api": "^2.0.0",
-    "tauri-plugin-video-api": "file:../../"
+    "@tauri-apps/api": "^2.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

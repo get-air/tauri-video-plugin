@@ -10,6 +10,8 @@ on:
       - ".github/workflows/audit.yml"
       - "**/Cargo.lock"
       - "**/Cargo.toml"
+      - "**/package-lock.json"
+      - "**/package.json"
   pull_request:
     branches:
       - main
@@ -17,6 +19,8 @@ on:
       - ".github/workflows/audit.yml"
       - "**/Cargo.lock"
       - "**/Cargo.toml"
+      - "**/package-lock.json"
+      - "**/package.json"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -26,6 +30,18 @@ permissions:
   contents: read
 
 jobs:
+  npm-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=high
+
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 20

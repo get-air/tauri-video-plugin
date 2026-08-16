@@ -1,28 +1,220 @@
-import { describe, expect, it } from 'vitest'
+// @vitest-environment happy-dom
 
-import { bufferedAhead } from './index'
+import type { BackendVideoController, VideoPluginError } from '@get-air/video'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const mocks = vi.hoisted(() => ({ invoke: vi.fn() }))
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
+
+import { attachTauriBackend } from './index'
 import {
   sameNativeSurfacePosition,
   snapNativeSurfaceLayout,
   visibleSurfaceBounds,
 } from './native-surface-layout'
 
-function ranges(values: Array<[number, number]>): TimeRanges {
-  return {
-    length: values.length,
-    start: (index) => values[index][0],
-    end: (index) => values[index][1],
-  }
+interface TestSnapshot {
+  durationSeconds: number
+  currentTimeSeconds: number
+  bufferedSeconds: number
+  playing: boolean
+  videoWidth: number
+  videoHeight: number
+  hardwareBackend: string
+  tracks: Array<{
+    id: string
+    index: number
+    kind: 'video' | 'audio' | 'subtitle'
+    language: string
+    label: string
+    codec: string
+    selected: boolean
+  }>
 }
 
-describe('bufferedAhead', () => {
-  it('reports the active range and ignores gaps', () => {
-    const value = ranges([
-      [0, 3],
-      [8, 14],
-    ])
-    expect(bufferedAhead(value, 10)).toBe(4)
-    expect(bufferedAhead(value, 5)).toBe(0)
+const controllers = new Set<BackendVideoController>()
+let snapshot: TestSnapshot
+
+function commandName(command: unknown): string {
+  return String(command).replace('plugin:video|', '')
+}
+
+function nativeActions(): string[] {
+  return mocks.invoke.mock.calls
+    .filter(([command]) => commandName(command) === 'native_control')
+    .map(([, options]) => String((options as { payload: { action: string } }).payload.action))
+}
+
+async function attach(
+  options: Parameters<typeof attachTauriBackend>[1] = { source: 'movie.mkv' },
+): Promise<BackendVideoController> {
+  const element = document.createElement('video')
+  document.body.append(element)
+  const controller = await attachTauriBackend(element, {
+    suspendWhenHidden: false,
+    surfaceMode: 'transparent-canvas',
+    ...options,
+  })
+  controllers.add(controller)
+  return controller
+}
+
+beforeEach(() => {
+  vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows NT 10.0')
+  snapshot = {
+    durationSeconds: 120,
+    currentTimeSeconds: 0,
+    bufferedSeconds: 12,
+    playing: false,
+    videoWidth: 1920,
+    videoHeight: 1080,
+    hardwareBackend: 'gstreamer-d3d11-win32',
+    tracks: [
+      {
+        id: 'video-0', index: 0, kind: 'video', language: '', label: '',
+        codec: 'h264', selected: true,
+      },
+      {
+        id: 'audio-1', index: 1, kind: 'audio', language: 'en', label: 'English',
+        codec: 'aac', selected: true,
+      },
+      {
+        id: 'subtitle-2', index: 2, kind: 'subtitle', language: 'en', label: 'English',
+        codec: 'webvtt', selected: true,
+      },
+    ],
+  }
+  mocks.invoke.mockReset()
+  mocks.invoke.mockImplementation(async (command: unknown) => {
+    if (commandName(command) === 'native_open'
+      || commandName(command) === 'native_control'
+      || commandName(command) === 'native_stats') {
+      return structuredClone(snapshot)
+    }
+    return undefined
+  })
+})
+
+afterEach(async () => {
+  await Promise.all([...controllers].map((controller) => controller.destroy()))
+  controllers.clear()
+  document.body.replaceChildren()
+  vi.restoreAllMocks()
+})
+
+describe('native controller contract', () => {
+  it('exposes stable, unique, platform-correct session IDs', async () => {
+    const first = await attach()
+    const second = await attach()
+
+    expect(first.sessionId).toMatch(/^windows-native-surface-/)
+    expect(second.sessionId).toMatch(/^windows-native-surface-/)
+    expect(second.sessionId).not.toBe(first.sessionId)
+    expect((await first.stats()).sessionId).toBe(first.sessionId)
+  })
+
+  it('rejects unknown or non-disableable tracks without changing local or native state', async () => {
+    const controller = await attach()
+    const originalTracks = controller.tracks.map((track) => ({ ...track }))
+    mocks.invoke.mockClear()
+
+    await expect(controller.selectTrack('subtitle', 'missing')).rejects.toThrow(
+      'Unknown subtitle track: missing',
+    )
+    await expect(controller.selectTrack('audio', 'missing')).rejects.toThrow(
+      'Unknown audio track: missing',
+    )
+    await expect(controller.selectTrack('audio')).rejects.toMatchObject({
+      _tag: 'VideoFeatureUnavailableError',
+      feature: 'audioTrackDisable',
+    })
+
+    mocks.invoke.mockImplementation(async (command: unknown, options?: unknown) => {
+      if (commandName(command) === 'native_control'
+        && (options as { payload?: { action?: string } })?.payload?.action === 'track') {
+        throw new Error('native track selection failed')
+      }
+      return structuredClone(snapshot)
+    })
+    await expect(controller.selectTrack('audio', 'audio-1'))
+      .rejects.toThrow('native track selection failed')
+
+    expect(controller.tracks).toEqual(originalTracks)
+    expect(nativeActions()).toEqual(['track'])
+  })
+
+  it('publishes detached IPC failures and removes its abort listener on destroy', async () => {
+    const abortController = new AbortController()
+    const add = vi.spyOn(abortController.signal, 'addEventListener')
+    const remove = vi.spyOn(abortController.signal, 'removeEventListener')
+    const controller = await attach({ source: 'movie.mkv', signal: abortController.signal })
+    const abortHandler = add.mock.calls.find(([type]) => type === 'abort')?.[1]
+    let failingAction = 'pause'
+    mocks.invoke.mockImplementation(async (command: unknown, options?: unknown) => {
+      if (commandName(command) === 'native_control'
+        && (options as { payload?: { action?: string } })?.payload?.action === failingAction) {
+        throw new Error(`${failingAction} IPC failed`)
+      }
+      if (commandName(command) === 'native_open' || commandName(command) === 'native_stats') {
+        return structuredClone(snapshot)
+      }
+      return undefined
+    })
+    const error = new Promise<VideoPluginError>((resolve) => {
+      controller.addEventListener('error', (event) => {
+        resolve((event as CustomEvent<VideoPluginError>).detail)
+      }, { once: true })
+    })
+
+    controller.pause()
+    await expect(error).resolves.toMatchObject({ code: 'transport', message: 'pause IPC failed' })
+
+    failingAction = 'seek'
+    const facadeError = new Promise<VideoPluginError>((resolve) => {
+      controller.addEventListener('error', (event) => {
+        resolve((event as CustomEvent<VideoPluginError>).detail)
+      }, { once: true })
+    })
+    controller.element.currentTime = 5
+    await expect(facadeError).resolves.toMatchObject({ code: 'transport', message: 'seek IPC failed' })
+
+    await controller.destroy()
+    controllers.delete(controller)
+
+    expect(abortHandler).toBeTypeOf('function')
+    expect(remove).toHaveBeenCalledWith('abort', abortHandler)
+  })
+
+  it('keeps GStreamer geometry capabilities truthful while preserving stretch', async () => {
+    const controller = await attach()
+    expect(controller.capabilities).toMatchObject({ videoFit: false, videoZoom: false })
+    mocks.invoke.mockClear()
+
+    await controller.setVideoFit('stretch')
+    await expect(controller.setVideoFit('cover')).rejects.toMatchObject({
+      _tag: 'VideoFeatureUnavailableError',
+      feature: 'videoFit',
+    })
+    await expect(controller.setVideoZoom(1.25)).rejects.toMatchObject({
+      _tag: 'VideoFeatureUnavailableError',
+      feature: 'videoZoom',
+    })
+
+    expect(nativeActions()).toEqual(['stretch'])
+  })
+
+  it('preserves complete fit and zoom support for Linux mpv', async () => {
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Linux x86_64')
+    snapshot.hardwareBackend = 'mpv:vaapi:h264:gtk-glarea'
+    const controller = await attach({ source: 'movie.mkv', nativeBackend: 'mpv' })
+    expect(controller.capabilities).toMatchObject({ videoFit: true, videoZoom: true })
+    mocks.invoke.mockClear()
+
+    await controller.setVideoFit('cover')
+    await controller.setVideoZoom(1.5)
+
+    expect(nativeActions()).toEqual(['crop', 'zoom'])
   })
 })
 

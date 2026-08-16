@@ -1,0 +1,67 @@
+name: Publish Rust crate to crates.io
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    # The first crate version must be published manually. After registering this
+    # workflow as the crate's trusted publisher, enable the repository variable.
+    if: >-
+      github.repository == 'get-air/tauri-video-plugin' &&
+      github.event.release.prerelease == false &&
+      vars.CRATES_IO_TRUSTED_PUBLISHING == 'enabled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify stable release tag
+        id: crate_version
+        run: |
+          crate_version=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "tauri-plugin-video"))')
+          test "$GITHUB_REF_NAME" = "v$crate_version"
+          case "$crate_version" in
+            *-*) echo "Prerelease versions must not use the stable crates.io workflow"; exit 1 ;;
+          esac
+          echo "version=$crate_version" >> "$GITHUB_OUTPUT"
+      - name: Check whether the crate version is already published
+        id: published
+        env:
+          CRATE_VERSION: ${{ steps.crate_version.outputs.version }}
+        run: |
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --user-agent 'get-air/tauri-video-plugin release workflow' \
+            "https://crates.io/api/v1/crates/tauri-plugin-video/$CRATE_VERSION")
+          case "$status" in
+            200) echo "exists=true" >> "$GITHUB_OUTPUT" ;;
+            404) echo "exists=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "Unexpected crates.io response: HTTP $status"; exit 1 ;;
+          esac
+      - name: Verify crates.io package
+        if: steps.published.outputs.exists == 'false'
+        run: cargo publish --dry-run --locked
+      - name: Authenticate to crates.io
+        if: steps.published.outputs.exists == 'false'
+        id: crates_io_auth
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Publish to crates.io
+        if: steps.published.outputs.exists == 'false'
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
+      - name: Note existing publication
+        if: steps.published.outputs.exists == 'true'
+        env:
+          CRATE_VERSION: ${{ steps.crate_version.outputs.version }}
+        run: echo "tauri-plugin-video $CRATE_VERSION is already published; no upload was needed." >> "$GITHUB_STEP_SUMMARY"

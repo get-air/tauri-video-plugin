@@ -1,5 +1,5 @@
 import Blits from '@lightningjs/blits'
-import { transparentBlitsSettings } from 'tauri-plugin-video-api/blits'
+import { transparentBlitsSettings } from '@get-air/video/blits'
 
 import App from './App'
 

@@ -452,6 +452,7 @@ mod gstreamer {
                     .set_property("volume", payload.value.clamp(0.0, 1.0)),
                 "fit" => player.video_sink.set_property("force-aspect-ratio", true),
                 "crop" => player.video_sink.set_property("force-aspect-ratio", false),
+                "stretch" => player.video_sink.set_property("force-aspect-ratio", false),
                 "track" => select_stream(player, payload.index, true)?,
                 "deselectTrack" => select_stream(player, payload.index, false)?,
                 action => {

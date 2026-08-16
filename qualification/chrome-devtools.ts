@@ -1,5 +1,7 @@
 interface DevToolsTarget {
   webSocketDebuggerUrl?: string
+  type?: string
+  url?: string
 }
 
 interface RuntimeExceptionDetails {
@@ -57,7 +59,9 @@ export class ChromeRuntime {
     const response = await fetch(endpoint)
     if (!response.ok) throw new Error(`DevTools discovery failed: HTTP ${response.status}`)
     const targets = await response.json() as DevToolsTarget[]
-    const address = targets[0]?.webSocketDebuggerUrl
+    const target = targets.find((candidate) => candidate.type === 'page'
+      && !candidate.url?.startsWith('devtools://')) ?? targets[0]
+    const address = target?.webSocketDebuggerUrl
     if (!address) throw new Error('Android WebView DevTools target is unavailable')
     const socket = new WebSocket(address)
     await new Promise<void>((resolve, reject) => {

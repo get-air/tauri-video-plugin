@@ -8,7 +8,9 @@ const host = process.env.TAURI_DEV_HOST
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    dedupe: ['react', 'react-dom'],
+    // The adapter is file-linked in this repository's example. Resolve its
+    // core dependency exactly as a published, flattened npm install would.
+    dedupe: ['@get-air/video', 'effect', 'mediabunny', 'react', 'react-dom'],
   },
   clearScreen: false,
   server: {

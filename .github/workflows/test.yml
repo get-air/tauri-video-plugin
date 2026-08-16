@@ -102,6 +102,23 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run build
+      - name: Verify the adapter bundle boundary
+        run: |
+          command -v grep >/dev/null
+          if grep --recursive --line-number --extended-regexp \
+            "mediabunny|@solidtv|react-dom|norigin-spatial" dist-js; then
+            echo "The native adapter bundle contains DOM package implementation code"
+            exit 1
+          fi
+      - run: npm pack --dry-run --ignore-scripts
+      - name: Smoke-test packed ESM entrypoints
+        run: |
+          package_tarball=$(npm pack --silent --ignore-scripts)
+          smoke_dir=$(mktemp -d)
+          cd "$smoke_dir"
+          npm init --yes >/dev/null
+          npm install "$GITHUB_WORKSPACE/$package_tarball" >/dev/null
+          node --input-type=module -e "await import('@get-air/video-tauri'); await import('@get-air/video-tauri/effect')"
       - run: npm ci
         working-directory: examples/tauri-app
       - run: npm run build

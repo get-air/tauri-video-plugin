@@ -14,14 +14,13 @@ import {
 } from 'media-chrome/react'
 
 import {
-  attachVideo,
   type MediaInfo,
   type PlaybackQuality,
-  type VideoBackend,
   type VideoController,
   type VideoFitMode,
   type VideoSource,
-} from 'tauri-plugin-video-api'
+} from '@get-air/video'
+import type { NativeVideoBackend, VideoClient } from '@get-air/video-tauri'
 
 export interface PlayerTelemetry {
   currentTime: number
@@ -33,8 +32,9 @@ export interface PlayerTelemetry {
 }
 
 interface NativeMediaPlayerProps {
+  client: VideoClient
   source: string | VideoSource
-  backend?: VideoBackend
+  engine?: NativeVideoBackend
   reloadKey: number
   title: string
   onController: (controller: VideoController | null) => void
@@ -47,8 +47,9 @@ const EMPTY_MEDIA: MediaInfo = { seekable: true, live: false, tracks: [], chapte
 const AUDIO_STATE_KEY = 'tauri-video-example:audio-state'
 
 export function NativeMediaPlayer({
+  client,
   source,
-  backend,
+  engine,
   reloadKey,
   title,
   onController,
@@ -145,21 +146,18 @@ export function NativeMediaPlayer({
       setFit('fit')
       setZoom(1)
       try {
-        const controller = await attachVideo(videoElement, {
+        const controller = await client.attach(videoElement, {
           source,
-          backend,
+          backend: 'tauri',
+          backendOptions: {
+            tauri: { engine },
+          },
           autoplay: false,
           deviceProfile: 'auto',
           controlRegions: playerRef.current?.querySelectorAll(
             'media-control-bar, media-loading-indicator, .native-trackbar',
           ),
           signal: abort.signal,
-          platform: {
-            android: {
-              decoderFallback: true,
-              dolbyVision: 'hevc-base-layer',
-            },
-          },
         })
         if (cancelled) {
           await controller.destroy()
@@ -212,7 +210,7 @@ export function NativeMediaPlayer({
         void controller.destroy()
       }
     }
-  }, [sourceKey, backend, reloadKey])
+  }, [client, sourceKey, engine, reloadKey])
 
   async function selectTrack(kind: 'audio' | 'subtitle', trackId?: string) {
     await controllerRef.current?.selectTrack(kind, trackId || undefined)
@@ -259,7 +257,7 @@ export function NativeMediaPlayer({
       </MediaController>
 
       {error && (
-        <div className="player-error" role="alert" data-tauri-video-controls="">
+        <div className="player-error" role="alert" data-air-video-controls="">
           <strong>Couldn’t open this stream</strong>
           <span>{error}</span>
         </div>

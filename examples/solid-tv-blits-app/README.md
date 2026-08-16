@@ -4,6 +4,10 @@ This app renders every visible control with Blits while the plugin owns a
 native GStreamer/mpv/Media3/VLC surface underneath the WebView. The video is
 not decoded into a canvas texture.
 
+The Blits integration comes from `@get-air/video/blits`; this example injects a
+client created by `@get-air/video-tauri` so the same canvas API can select the
+native `tauri` backend.
+
 The full-screen Blits background uses the built-in `holePunch` shader at the
 same authored rectangle passed to `attachBlitsVideo`. Text, badges, and the
 control strip are then rendered after that background, so they remain normal

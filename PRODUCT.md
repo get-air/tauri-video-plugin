@@ -8,9 +8,10 @@ adaptive
 
 ## Users
 
-React and TypeScript developers building Tauri media applications for Linux,
+TypeScript developers building Air-powered Tauri media applications for Linux,
 Windows, Android mobile, and Android TV. They need native playback performance
-while retaining HTML/CSS layout, overlays, and application chrome.
+while retaining the shared `@get-air/video` API, DOM layout, overlays, and
+application chrome.
 
 ## Product Purpose
 
@@ -18,11 +19,15 @@ Provide a publishable Tauri plugin that streams containers and codecs a WebView 
 
 ## Positioning
 
-The plugin keeps decoding and presentation on the platform-native accelerated path while exposing one headless TypeScript controller and optional React controls. The native video surface follows a normal DOM element so arbitrary HTML can be layered above it.
+The plugin keeps decoding and presentation on the platform-native accelerated path while adapting it to the controller contract owned by `@get-air/video`. Framework integrations and headed controls live in that core video package. The native video surface follows a normal DOM element so arbitrary HTML can be layered above it.
 
 ## Operating Context
 
-Developers install the Rust and npm packages, attach playback to a positioned video element or use the headed React component, then control play, pause, seek, volume, fit, zoom, buffering, quality telemetry, and audio/subtitle/video tracks. The example application is both a quick-start and an interactive compatibility demonstration.
+Developers install the Rust plugin and `@get-air/video-tauri` alongside
+`@get-air/video`, register the Tauri adapter, and attach playback to a positioned
+video element through the shared API. React, Solid, and Blits integrations come
+from `@get-air/video`; this repository's examples demonstrate the native adapter
+and platform qualification.
 
 ## Capabilities and Constraints
 
@@ -30,17 +35,24 @@ Developers install the Rust and npm packages, attach playback to a positioned vi
 - Prefer hardware decoding and direct native presentation; avoid decoded-frame copies in the normal path.
 - Support MP4, WebM, Ogg, MKV, and other containers supported by the active native backend.
 - Expose audio, subtitle, and video track selection plus playback and buffer telemetry.
-- Keep the headless API platform-neutral while allowing Android, Android TV, and Linux-specific tuning.
+- Keep native tuning inside this adapter while consuming the platform-neutral controller contract from `@get-air/video`.
 - Android TV controls must use spatial focus navigation and must not seek merely because focus moves left or right.
 - The example must not imply that Windows support or package publication is complete before qualification and release actually occur.
 
 ## Brand Commitments
 
-The project name is `tauri-plugin-video`. The public presentation is technical, direct, dark-mode-first, and evidence-led. Player controls in the example use an established open-source player UI rather than a bespoke visual design.
+The project is Air's Tauri video adapter, published to npm as
+`@get-air/video-tauri` and to crates.io as `tauri-plugin-video`. Its public
+presentation is technical, direct, dark-mode-first, and evidence-led.
 
 ## Evidence on Hand
 
-The repository contains the Rust plugin, Android implementation, TypeScript headless API, React headed player, emulator qualification tools, tests, and CI. Public screenshots must be captured from the running implementation. No customer logos, testimonials, or unsupported performance benchmarks are available and none should be invented.
+The repository contains the Rust plugin, Android implementation, TypeScript
+adapter, native examples, qualification tools, tests, and CI. The shared
+controller contract and framework players are maintained in the separate
+`@get-air/video` repository. Public screenshots must be captured from the running
+implementation. No customer logos, testimonials, or unsupported performance
+benchmarks are available and none should be invented.
 
 ## Product Principles
 
@@ -48,8 +60,11 @@ The repository contains the Rust plugin, Android implementation, TypeScript head
 - Stream first; never require whole-file conversion.
 - One predictable API across platforms.
 - Measured compatibility and performance over claims.
-- Headless by default, polished controls when wanted.
+- Lean native adapter by default; polished controls come from `@get-air/video`.
 
 ## Accessibility & Inclusion
 
-Controls must remain keyboard accessible, expose meaningful names and state, preserve visible focus, honor reduced motion, meet 48 dp touch targets on Android, and remain operable with an Android TV remote.
+Examples that consume the core package's controls must remain keyboard accessible,
+expose meaningful names and state, preserve visible focus, honor reduced motion,
+meet 48 dp touch targets on Android, and remain operable with an Android TV
+remote.

@@ -1,0 +1,42 @@
+name: Publish JavaScript API to npm
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    if: github.repository == 'get-air/tauri-video-plugin' && github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm install --global npm@11.19.0
+      - run: npm ci
+      - name: Verify stable release tag
+        run: |
+          package_version=$(node --print "require('./package.json').version")
+          test "$GITHUB_REF_NAME" = "v$package_version"
+          case "$package_version" in
+            *-*) echo "Prerelease versions must use a non-latest npm release workflow"; exit 1 ;;
+          esac
+      - run: npm run ci
+      - name: Publish to npm
+        env:
+          # NPM_TOKEN is used only to bootstrap the first package version.
+          # Delete it after configuring this workflow as the trusted publisher.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if test -z "$NODE_AUTH_TOKEN"; then
+            unset NODE_AUTH_TOKEN
+          fi
+          npm publish --access public --provenance

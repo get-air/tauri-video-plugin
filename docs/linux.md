@@ -12,9 +12,13 @@ tauri-plugin-video = { version = "0.1", features = ["mpv-runtime"] }
 ```
 
 ```ts
-const player = await attachVideo(video, {
+import { createTauriVideoClient } from '@get-air/video-tauri'
+
+const client = createTauriVideoClient()
+const player = await client.attach(video, {
   source: { uri, headers, cookies, userAgent, referrer },
-  backend: 'mpv',
+  backend: 'tauri',
+  backendOptions: { tauri: { engine: 'mpv' } },
 })
 ```
 
@@ -23,11 +27,15 @@ bound framebuffer. Frames remain on the native OpenGL path; the plugin does not
 read pixels back into Rust or JavaScript. Render notifications are coalesced in
 a one-item main-context channel so decoder callbacks cannot flood GTK. Position,
 duration, cache end, tracks, selected streams, frame drops, hardware decoder,
-fit, zoom, seeking, and volume are translated into the same controller model as
-GStreamer.
+seeking, and volume are translated into the same controller model as GStreamer.
+mpv also implements all three common fit modes and video zoom. GStreamer's GTK
+sink safely supports `fit` and `stretch`, but not crop-to-cover or arbitrary
+zoom, so its controller reports `videoFit: false` and `videoZoom: false` and
+rejects those unsupported operations.
 
-`auto` always means GStreamer. libmpv is an explicit alternative, and requesting it without `mpv-runtime`
-returns an actionable runtime error.
+The Tauri adapter's `engine: 'auto'` selects GStreamer on Linux. libmpv is an
+explicit alternative, and requesting it without `mpv-runtime` returns an
+actionable runtime error.
 
 ## Buffering and memory
 
@@ -35,12 +43,15 @@ Both native Linux backends keep their own buffering defaults unless the
 application supplies an override. Configure either backend through the same API:
 
 ```ts
-await attachVideo(video, {
+await client.attach(video, {
   source: uri,
-  backend: 'gstreamer', // or 'mpv'
-  platform: {
-    linux: {
-      buffer: { maxSeconds: 15, maxBytes: 64 * 1024 * 1024 },
+  backend: 'tauri',
+  backendOptions: {
+    tauri: {
+      engine: 'gstreamer', // or 'mpv'
+      linux: {
+        buffer: { maxSeconds: 15, maxBytes: 64 * 1024 * 1024 },
+      },
     },
   },
 })

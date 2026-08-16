@@ -3,54 +3,26 @@ import {
   type NativeSurfaceLayout,
   type VisibleSurfaceBounds,
 } from './native-surface-layout'
+import {
+  registerVideoControls as registerAirVideoControls,
+  VIDEO_CONTROLS_ATTRIBUTE,
+  type VideoControlsTarget,
+} from '@get-air/video'
 
-export const VIDEO_CONTROLS_ATTRIBUTE = 'data-tauri-video-controls'
-
-export type VideoControlsTarget = Element | Iterable<Element>
-
-interface ControlRegistration {
-  count: number
-  previousValue: string | null
-}
-
-const controlRegistrations = new WeakMap<Element, ControlRegistration>()
+export { VIDEO_CONTROLS_ATTRIBUTE, type VideoControlsTarget } from '@get-air/video'
 
 /**
  * Marks arbitrary DOM as intentional video UI. The element can live anywhere
  * in the document; it does not need to be a child of or overlap the video.
  */
 export function registerVideoControls(target: VideoControlsTarget): () => void {
-  const elements = isElement(target) ? [target] : [...target]
-  for (const element of elements) {
-    const registration = controlRegistrations.get(element)
-    if (registration) {
-      registration.count += 1
-      continue
-    }
-    controlRegistrations.set(element, {
-      count: 1,
-      previousValue: element.getAttribute(VIDEO_CONTROLS_ATTRIBUTE),
-    })
-    element.setAttribute(VIDEO_CONTROLS_ATTRIBUTE, '')
-  }
+  const release = registerAirVideoControls(target)
   refreshActiveOccluders()
-
   let registered = true
   return () => {
     if (!registered) return
     registered = false
-    for (const element of elements) {
-      const registration = controlRegistrations.get(element)
-      if (!registration) continue
-      registration.count -= 1
-      if (registration.count > 0) continue
-      controlRegistrations.delete(element)
-      if (registration.previousValue === null) {
-        element.removeAttribute(VIDEO_CONTROLS_ATTRIBUTE)
-      } else {
-        element.setAttribute(VIDEO_CONTROLS_ATTRIBUTE, registration.previousValue)
-      }
-    }
+    release()
     refreshActiveOccluders()
   }
 }
@@ -759,10 +731,6 @@ function readCornerRadiusStyles(
     computed.borderBottomRightRadius,
     computed.borderBottomLeftRadius,
   ]
-}
-
-function isElement(value: VideoControlsTarget): value is Element {
-  return typeof Element !== 'undefined' && value instanceof Element
 }
 
 function stylesheetMutation(record: MutationRecord): boolean {

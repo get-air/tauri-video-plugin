@@ -4,7 +4,8 @@ import {
   blitsVideoHole,
   type BlitsVideoController,
   type BlitsVideoRect,
-} from 'tauri-plugin-video-api/blits'
+} from '@get-air/video/blits'
+import { createTauriVideoClient } from '@get-air/video-tauri'
 
 const APP_WIDTH = 1920
 const APP_HEIGHT = 1080
@@ -16,6 +17,9 @@ const VIDEO_RECT: BlitsVideoRect = {
 }
 const VIDEO_SOURCE = import.meta.env.VITE_VIDEO_SOURCE
   || 'https://media.w3.org/2010/05/sintel/trailer.mp4'
+const videoClient = createTauriVideoClient({
+  playback: { engine: 'auto' },
+})
 const backgroundShader = JSON.stringify(blitsVideoHole(VIDEO_RECT, 26))
   .replaceAll('"', "'")
 
@@ -119,11 +123,13 @@ export default Blits.Application({
       if (!canvas) throw new Error('Missing #blits-canvas')
       try {
         video = await attachBlitsVideo({
+          client: videoClient,
           canvas,
           rect: VIDEO_RECT,
           appWidth: APP_WIDTH,
           appHeight: APP_HEIGHT,
           source: VIDEO_SOURCE,
+          backend: 'tauri',
           autoplay: true,
         })
         this.duration = video.media.durationSeconds ?? 0

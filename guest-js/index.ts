@@ -1,4 +1,17 @@
 import { invoke } from '@tauri-apps/api/core'
+import type {
+  AttachVideoOptions as CoreAttachVideoOptions,
+  BackendVideoController,
+  MediaInfo,
+  MediaTrack,
+  PlaybackQuality,
+  PlayerCapabilities,
+  SessionStats,
+  TrackKind,
+  VideoControllerEventMap,
+  VideoFitMode,
+  VideoPluginError,
+} from '@get-air/video'
 import {
   sameNativeSurfacePosition,
   snapNativeSurfaceLayout,
@@ -19,97 +32,7 @@ export {
 
 const COMMAND = 'plugin:video|'
 
-export type TrackKind = 'video' | 'audio' | 'subtitle'
-export type VideoFitMode = 'fit' | 'cover' | 'stretch'
-export type DeviceProfile = 'auto' | 'mobile' | 'tv' | 'desktop'
-
-export interface VideoSource {
-  uri: string
-  headers?: Record<string, string>
-  cookies?: string
-  userAgent?: string
-  referrer?: string
-  tlsCaFile?: string
-  startPositionSeconds?: number
-}
-
-export interface MediaTrack {
-  id: string
-  kind: TrackKind
-  streamIndex: number
-  codec: string
-  caps: string
-  label?: string
-  language?: string
-  selected: boolean
-  default: boolean
-  forced: boolean
-  width?: number
-  height?: number
-  frameRate?: number
-  channels?: number
-  sampleRate?: number
-}
-
-export interface Chapter {
-  id: string
-  title?: string
-  startSeconds: number
-  endSeconds?: number
-}
-
-export interface MediaInfo {
-  durationSeconds?: number
-  seekable: boolean
-  live: boolean
-  container?: string
-  tracks: MediaTrack[]
-  chapters: Chapter[]
-}
-
-export interface SessionStats {
-  sessionId: string
-  encodedBytesBuffered: number
-  bufferedAheadSeconds: number
-  videoCodec?: string
-  audioCodec?: string
-  hardwareBackend?: string
-  decodedFrameCopies: number
-  droppedFrames: number
-  averageFrameProcessingUs?: number
-  visible: boolean
-  playing: boolean
-}
-
-export interface PlaybackQuality {
-  presentedFrames: number
-  mediaTimeSeconds?: number
-  measuredFps: number
-  totalVideoFrames: number
-  droppedVideoFrames: number
-  droppedFramePercent: number
-}
-
-export interface AttachVideoOptions {
-  source: string | VideoSource
-  /** Native playback engine. Alternative engines must be requested explicitly. */
-  backend?: VideoBackend
-  /**
-   * Selects who creates the transparent aperture above the native video.
-   * `dom` is the normal HTML mode. Canvas renderers must explicitly choose
-   * `transparent-canvas` and punch the matching hole in their own background.
-   */
-  surfaceMode?: 'dom' | 'transparent-canvas'
-  suspendWhenHidden?: boolean
-  autoplay?: boolean
-  deviceProfile?: DeviceProfile
-  platform?: PlatformPlaybackOptions
-  /** DOM regions that belong to this player's UI, wherever they are mounted. */
-  controlRegions?: VideoControlsTarget
-  signal?: AbortSignal
-}
-
-export type VideoBackend = 'auto' | 'media3' | 'libvlc' | 'gstreamer' | 'mpv'
+export type NativeVideoBackend = 'auto' | 'media3' | 'libvlc' | 'gstreamer' | 'mpv'
 
 export interface NativeBufferOptions {
   /** Optional backend-specific minimum reserve override. Omit to use the player's default. */
@@ -148,45 +71,11 @@ export interface PlatformPlaybackOptions {
   windows?: WindowsPlaybackOptions
 }
 
-export interface VideoControllerEventMap {
-  timeupdate: CustomEvent<{ currentTime: number }>
-  bufferprogress: CustomEvent<{ bufferedAhead: number }>
-  trackchange: CustomEvent<{ kind: TrackKind; trackId?: string }>
-  error: CustomEvent<VideoPluginError>
-}
-
-/** Framework-neutral playback contract returned by every rendering backend. */
-export interface VideoController extends EventTarget {
-  readonly element: HTMLVideoElement
-  readonly sessionId: string
-  readonly media: MediaInfo
-  readonly tracks: readonly MediaTrack[]
-  play(): Promise<void>
-  pause(): void
-  seek(positionSeconds: number): Promise<void>
-  selectTrack(kind: TrackKind, trackId?: string): Promise<void>
-  setVolume(volume: number): Promise<void>
-  setVideoFit(mode: VideoFitMode): Promise<void>
-  setVideoZoom(scale: number): Promise<void>
-  stats(): Promise<SessionStats>
-  bufferedAhead(): number
-  playbackQuality(): PlaybackQuality
-  /** Re-measure the anchor and synchronize the native surface on the next frame. */
-  refreshLayout(): void
-  /** Mark arbitrary DOM as this player's UI. Returns an unregister function. */
-  registerControls(target: VideoControlsTarget): () => void
-  destroy(): Promise<void>
-  /** Subscribe to a typed controller event. Returns an unsubscribe function. */
-  on<K extends keyof VideoControllerEventMap>(
-    type: K,
-    listener: (event: VideoControllerEventMap[K]) => void,
-    options?: AddEventListenerOptions,
-  ): () => void
-}
-
-export interface VideoPluginError {
-  code: string
-  message: string
+/** Internal native settings consumed only by the Tauri adapter. */
+export interface NativeAttachVideoOptions extends CoreAttachVideoOptions {
+  backend?: 'tauri'
+  nativeBackend?: NativeVideoBackend
+  platform?: PlatformPlaybackOptions
 }
 
 interface NativePlaybackSnapshot {
@@ -214,10 +103,11 @@ interface NativePlaybackSnapshot {
   }>
 }
 
-export async function attachVideo(
+/** @internal Raw Tauri backend factory used by the public adapter. */
+export async function attachTauriBackend(
   element: HTMLVideoElement,
-  options: AttachVideoOptions,
-): Promise<VideoController> {
+  options: NativeAttachVideoOptions,
+): Promise<BackendVideoController> {
   if (!(element instanceof HTMLVideoElement)) {
     throw new TypeError('attachVideo requires an HTMLVideoElement')
   }
@@ -243,9 +133,9 @@ interface NativeMediaElementState {
 
 const nativeMediaElementStates = new WeakMap<HTMLVideoElement, NativeMediaElementState>()
 
-class NativeSurfaceVideoController extends EventTarget implements VideoController {
+class NativeSurfaceVideoController extends EventTarget implements BackendVideoController {
   readonly element: HTMLVideoElement
-  #options: AttachVideoOptions
+  #options: NativeAttachVideoOptions
   #snapshot?: NativePlaybackSnapshot
   #media: MediaInfo = { seekable: true, live: false, tracks: [], chapters: [] }
   #timer?: number
@@ -268,10 +158,12 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   #destroyed = false
   #volume = 1
   #muted = false
+  #removeAbortListener?: () => void
   readonly #sessionKey = globalThis.crypto?.randomUUID?.()
     ?? `native-${Date.now()}-${++nativeSurfaceSequence}`
+  readonly #sessionId = `${nativePlatform()}-native-surface-${this.#sessionKey}`
 
-  constructor(element: HTMLVideoElement, options: AttachVideoOptions) {
+  constructor(element: HTMLVideoElement, options: NativeAttachVideoOptions) {
     super()
     this.element = element
     this.#options = options
@@ -283,7 +175,27 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     this.#requestedPlaying = options.autoplay ?? false
   }
 
-  get sessionId(): string { return /Android/i.test(navigator.userAgent) ? 'android-native-surface' : 'linux-native-surface' }
+  get sessionId(): string { return this.#sessionId }
+  get capabilities(): PlayerCapabilities {
+    const completeVideoGeometry = this.#supportsCompleteVideoGeometry()
+    return {
+      backend: 'tauri',
+      containers: 'platform',
+      codecs: 'platform',
+      drm: 'platform',
+      hdr: 'platform',
+      playbackRate: false,
+      volume: true,
+      // GStreamer can preserve or stretch the aspect ratio, but its current
+      // sinks cannot implement the common API's crop-to-cover mode.
+      videoFit: completeVideoGeometry,
+      videoZoom: completeVideoGeometry,
+      audioTrackSelection: true,
+      subtitleTrackSelection: true,
+      customHeaders: true,
+      frameAccurateSeeking: false,
+    }
+  }
   get media(): MediaInfo { return this.#media }
   get tracks(): readonly MediaTrack[] { return this.#media.tracks }
 
@@ -373,7 +285,8 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
       document.addEventListener('visibilitychange', this.#handleDocumentVisibility)
       this.#queueVisibilitySync()
     }
-    this.#options.signal?.addEventListener('abort', () => void this.destroy(), { once: true })
+    if (this.#options.signal?.aborted) throw this.#options.signal.reason
+    this.#bindAbortSignal()
   }
 
   async play(): Promise<void> {
@@ -391,10 +304,10 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
 
   pause(): void {
     this.#requestedPlaying = false
-    void this.#control('pause').then((snapshot) => {
+    this.#runDetached(this.#control('pause').then((snapshot) => {
       this.#acceptSnapshot(snapshot)
       this.element.dispatchEvent(new Event('pause'))
-    })
+    }))
   }
 
   async setVolume(volume: number): Promise<void> {
@@ -402,6 +315,17 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     this.#volume = clamped
     this.#acceptSnapshot(await this.#control('volume', this.#muted ? 0 : clamped))
     this.element.dispatchEvent(new Event('volumechange'))
+  }
+
+  async setPlaybackRate(_rate: number): Promise<void> {
+    // Keep the normal Tauri entrypoint free of Effect's runtime cost. The
+    // common typed error is loaded only when an unsupported operation is used.
+    const { VideoFeatureUnavailableError } = await import('@get-air/video/effect')
+    throw new VideoFeatureUnavailableError({
+      backend: 'tauri',
+      feature: 'playbackRate',
+      message: 'The Tauri native engines do not expose portable playback-rate changes',
+    })
   }
 
   async seek(positionSeconds: number): Promise<void> {
@@ -438,12 +362,22 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   }
 
   async selectTrack(kind: TrackKind, trackId?: string): Promise<void> {
-    const selected = this.#snapshot?.tracks.find((track) => track.id === trackId && track.kind === kind)
-    if (selected) {
+    if (trackId !== undefined) {
+      const selected = this.#snapshot?.tracks.find(
+        (track) => track.id === trackId && track.kind === kind,
+      )
+      if (!selected) throw new Error(`Unknown ${kind} track: ${trackId}`)
       this.#acceptSnapshot(await this.#control('track', 0, selected.index))
     } else if (kind === 'subtitle') {
       const active = this.#media.tracks.find((track) => track.kind === kind && track.selected)
       if (active) this.#acceptSnapshot(await this.#control('deselectTrack', 0, active.streamIndex))
+    } else {
+      const { VideoFeatureUnavailableError } = await import('@get-air/video/effect')
+      throw new VideoFeatureUnavailableError({
+        backend: 'tauri',
+        feature: `${kind}TrackDisable`,
+        message: `The Tauri native engines cannot disable the selected ${kind} track through the common API`,
+      })
     }
     for (const track of this.#media.tracks) {
       if (track.kind === kind) track.selected = track.id === trackId
@@ -497,10 +431,26 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   }
 
   async setVideoFit(mode: VideoFitMode): Promise<void> {
+    if (mode === 'cover' && !this.#supportsCompleteVideoGeometry()) {
+      const { VideoFeatureUnavailableError } = await import('@get-air/video/effect')
+      throw new VideoFeatureUnavailableError({
+        backend: 'tauri',
+        feature: 'videoFit',
+        message: 'The active GStreamer sink cannot crop video to the common cover fit mode',
+      })
+    }
     this.#acceptSnapshot(await this.#control(mode === 'cover' ? 'crop' : mode))
   }
 
   async setVideoZoom(scale: number): Promise<void> {
+    if (!this.#supportsCompleteVideoGeometry()) {
+      const { VideoFeatureUnavailableError } = await import('@get-air/video/effect')
+      throw new VideoFeatureUnavailableError({
+        backend: 'tauri',
+        feature: 'videoZoom',
+        message: 'The active GStreamer sink does not expose portable video-surface zoom',
+      })
+    }
     this.#acceptSnapshot(await this.#control('zoom', Math.min(2, Math.max(1, scale))))
   }
 
@@ -521,6 +471,8 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   async destroy(): Promise<void> {
     if (this.#destroyed) return
     this.#destroyed = true
+    this.#removeAbortListener?.()
+    this.#removeAbortListener = undefined
     this.#stopPolling()
     this.#visibilityObserver?.disconnect()
     document.removeEventListener('visibilitychange', this.#handleDocumentVisibility)
@@ -688,7 +640,7 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     define('pause', { value: () => this.pause() })
     define('currentTime', {
       get: () => this.#snapshot?.currentTimeSeconds ?? 0,
-      set: (value: number) => { void this.seek(Number(value)) },
+      set: (value: number) => { this.#runDetached(this.seek(Number(value))) },
     })
     define('duration', { get: () => this.#snapshot?.durationSeconds ?? Number.NaN })
     define('paused', { get: () => !this.#requestedPlaying })
@@ -699,13 +651,15 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
     })
     define('volume', {
       get: () => this.#volume,
-      set: (value: number) => { void this.setVolume(Number(value)) },
+      set: (value: number) => { this.#runDetached(this.setVolume(Number(value))) },
     })
     define('muted', {
       get: () => this.#muted,
       set: (value: boolean) => {
         this.#muted = Boolean(value)
-        void this.#control('volume', this.#muted ? 0 : this.#volume)
+        this.#runDetached(this.#control('volume', this.#muted ? 0 : this.#volume).then((snapshot) => {
+          this.#acceptSnapshot(snapshot)
+        }))
         this.element.dispatchEvent(new Event('volumechange'))
       },
     })
@@ -786,6 +740,31 @@ class NativeSurfaceVideoController extends EventTarget implements VideoControlle
   #releaseCssSurface(): void {
     this.#compositor?.release()
     this.#compositor = undefined
+  }
+
+  #bindAbortSignal(): void {
+    const signal = this.#options.signal
+    if (!signal) return
+    const abort = () => this.#runDetached(this.destroy())
+    signal.addEventListener('abort', abort, { once: true })
+    this.#removeAbortListener = () => signal.removeEventListener('abort', abort)
+  }
+
+  #runDetached(operation: Promise<unknown>): void {
+    void operation.catch((error) => this.#publishError(error))
+  }
+
+  #publishError(error: unknown): void {
+    if (!this.#destroyed) {
+      this.dispatchEvent(new CustomEvent('error', { detail: normalizeError(error) }))
+    }
+  }
+
+  #supportsCompleteVideoGeometry(): boolean {
+    if (/Android/i.test(navigator.userAgent)) return true
+    if (!/Linux/i.test(navigator.userAgent)) return false
+    return this.#options.nativeBackend === 'mpv'
+      || /\bmpv\b/i.test(this.#snapshot?.hardwareBackend ?? '')
   }
 
   #handleViewportChange = (): void => {
@@ -899,7 +878,7 @@ function nativeScrollTargets(anchor: HTMLElement): EventTarget[] {
   return [...targets]
 }
 
-function nativeOpenSettings(options: AttachVideoOptions): Record<string, unknown> {
+function nativeOpenSettings(options: NativeAttachVideoOptions): Record<string, unknown> {
   const userAgent = navigator.userAgent
   const android = /Android/i.test(userAgent)
   const linux = /Linux/i.test(userAgent) && !android
@@ -915,7 +894,7 @@ function nativeOpenSettings(options: AttachVideoOptions): Record<string, unknown
     ?? (linux ? options.platform?.linux?.buffer : undefined)
     ?? (windows ? options.platform?.windows?.buffer : undefined)
   return {
-    backend: options.backend ?? 'auto',
+    backend: nativeBackend(options),
     minBufferMs: secondsToMilliseconds(buffer?.minSeconds),
     maxBufferMs: secondsToMilliseconds(buffer?.maxSeconds),
     playbackBufferMs: secondsToMilliseconds(buffer?.playSeconds),
@@ -927,20 +906,18 @@ function nativeOpenSettings(options: AttachVideoOptions): Record<string, unknown
   }
 }
 
-function secondsToMilliseconds(value?: number): number | undefined {
-  return value === undefined ? undefined : Math.max(0, Math.round(value * 1000))
+function nativePlatform(): 'android' | 'windows' | 'linux' {
+  if (/Android/i.test(navigator.userAgent)) return 'android'
+  if (/Windows/i.test(navigator.userAgent)) return 'windows'
+  return 'linux'
 }
 
-export function bufferedAhead(ranges: TimeRanges, currentTime: number): number {
-  for (let index = 0; index < ranges.length; index += 1) {
-    // Matroska remuxes can begin a few ticks after zero because of codec delay
-    // or composition offsets. That tiny timestamp gap is playable buffered
-    // media, not a reason to leave startup waiting forever.
-    if (ranges.start(index) <= currentTime + 0.5 && ranges.end(index) >= currentTime) {
-      return Math.max(0, ranges.end(index) - currentTime)
-    }
-  }
-  return 0
+function nativeBackend(options: NativeAttachVideoOptions): NativeVideoBackend {
+  return options.nativeBackend ?? 'auto'
+}
+
+function secondsToMilliseconds(value?: number): number | undefined {
+  return value === undefined ? undefined : Math.max(0, Math.round(value * 1000))
 }
 
 function normalizeError(error: unknown): VideoPluginError {

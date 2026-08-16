@@ -5,6 +5,11 @@ import { defineConfig } from 'vite'
 const host = process.env.TAURI_DEV_HOST
 
 export default defineConfig({
+  resolve: {
+    // The local adapter link otherwise creates a second core module graph that
+    // real registry consumers do not receive.
+    dedupe: ['@get-air/video', 'effect', 'mediabunny'],
+  },
   clearScreen: false,
   server: {
     fs: {

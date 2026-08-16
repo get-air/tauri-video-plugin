@@ -57,6 +57,10 @@ describe('outsidePanels', () => {
 })
 
 describe('registerVideoControls', () => {
+  it('uses the backend-neutral Air control marker', () => {
+    expect(VIDEO_CONTROLS_ATTRIBUTE).toBe('data-air-video-controls')
+  })
+
   it('reference-counts registrations and restores pre-existing markup', () => {
     const first = document.createElement('nav')
     const second = document.createElement('aside')

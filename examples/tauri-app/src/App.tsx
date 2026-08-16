@@ -1,7 +1,12 @@
 import { type FormEvent, useMemo, useState } from 'react'
 
-import type { MediaTrack, VideoBackend, VideoController, VideoSource } from 'tauri-plugin-video-api'
-import { TvVideoPlayer } from 'tauri-plugin-video-api/react'
+import type { MediaTrack, VideoController, VideoSource } from '@get-air/video'
+import { TvVideoPlayer } from '@get-air/video/react'
+import {
+  createTauriVideoClient,
+  type AttachVideoOptions as TauriAttachVideoOptions,
+  type NativeVideoBackend,
+} from '@get-air/video-tauri'
 
 import { NativeMediaPlayer, type PlayerTelemetry } from './NativeMediaPlayer'
 import { DEFAULT_SOURCE, DEMO_SOURCES, type DemoSource } from './samples'
@@ -12,7 +17,15 @@ const caFile = params.get('ca') ?? import.meta.env.VITE_VIDEO_CA_FILE
 const tvMode = params.get('tv') === '1' || import.meta.env.VITE_VIDEO_TV === '1'
 const android = /Android/i.test(navigator.userAgent)
 const windows = /Windows/i.test(navigator.userAgent)
-const backendOptions: ReadonlyArray<{ value: VideoBackend; label: string }> = android
+const videoClient = createTauriVideoClient({
+  playback: {
+    android: {
+      decoderFallback: true,
+      dolbyVision: 'hevc-base-layer',
+    },
+  },
+})
+const backendOptions: ReadonlyArray<{ value: NativeVideoBackend; label: string }> = android
   ? [
       { value: 'auto', label: 'Auto' },
       { value: 'media3', label: 'Media3' },
@@ -30,7 +43,7 @@ const backendOptions: ReadonlyArray<{ value: VideoBackend; label: string }> = an
     ]
 const configuredBackend = (
   params.get('backend') ?? import.meta.env.VITE_VIDEO_BACKEND ?? 'auto'
-) as VideoBackend
+) as NativeVideoBackend
 const initialBackend = backendOptions.some(({ value }) => value === configuredBackend)
   ? configuredBackend
   : 'auto'
@@ -76,7 +89,7 @@ export default function App() {
   const [input, setInput] = useState(defaultUri)
   const [source, setSource] = useState(defaultUri)
   const [reloadKey, setReloadKey] = useState(0)
-  const [requestedBackend, setRequestedBackend] = useState<VideoBackend>(initialBackend)
+  const [requestedBackend, setRequestedBackend] = useState<NativeVideoBackend>(initialBackend)
   const [activeBackend, setActiveBackend] = useState<string>()
   const [controller, setController] = useState<VideoController | null>(null)
   const [telemetry, setTelemetry] = useState(EMPTY_TELEMETRY)
@@ -88,6 +101,13 @@ export default function App() {
     if (!caFile) return source
     return { uri: source, tlsCaFile: caFile }
   }, [source])
+  const playerOptions: Omit<
+    TauriAttachVideoOptions,
+    'source' | 'autoplay' | 'deviceProfile'
+  > = {
+    backend: 'tauri',
+    backendOptions: { tauri: { engine: requestedBackend } },
+  }
 
   function load(uri: string, demo: DemoSource | null = null) {
     setInput(uri)
@@ -103,9 +123,10 @@ export default function App() {
     if (next) load(next)
   }
 
-  function changeBackend(nextBackend: VideoBackend) {
+  function changeBackend(nextBackend: NativeVideoBackend) {
     setActiveBackend(undefined)
     setRequestedBackend(nextBackend)
+    setReloadKey((value) => value + 1)
 
     const url = new URL(window.location.href)
     if (nextBackend === 'auto') url.searchParams.delete('backend')
@@ -146,14 +167,13 @@ export default function App() {
     return (
       <main className="tv-app">
         <TvVideoPlayer
+          client={videoClient}
           source={sourceValue}
           reloadKey={reloadKey}
           autoPlay
           onController={expose}
           onError={(reason) => setError(reason.message)}
-          options={{
-            backend: requestedBackend,
-          }}
+          options={playerOptions}
         >
           <div className="tv-overlay"><img src="/overlay-badge.svg" alt="" /> HTML overlay</div>
         </TvVideoPlayer>
@@ -173,7 +193,7 @@ export default function App() {
   return (
     <main className="app-shell">
       <header className="app-header">
-        <a className="brand" href="https://github.com/vynxc/tauri-video-plugin" target="_blank" rel="noreferrer">
+        <a className="brand" href="https://github.com/get-air/tauri-video-plugin" target="_blank" rel="noreferrer">
           <span className="brand-mark">TV</span>
           <span><strong>Tauri Video</strong><small>native stream lab</small></span>
         </a>
@@ -182,7 +202,7 @@ export default function App() {
             <span>Backend</span>
             <select
               value={requestedBackend}
-              onChange={(event) => changeBackend(event.currentTarget.value as VideoBackend)}
+              onChange={(event) => changeBackend(event.currentTarget.value as NativeVideoBackend)}
             >
               {backendOptions.map(({ value, label }) => (
                 <option key={value} value={value}>{label}</option>
@@ -210,8 +230,9 @@ export default function App() {
           </div>
 
           <NativeMediaPlayer
+            client={videoClient}
             source={sourceValue}
-            backend={requestedBackend}
+            engine={requestedBackend}
             reloadKey={reloadKey}
             title={selectedDemo?.title ?? 'Custom video stream'}
             onController={expose}
@@ -292,7 +313,7 @@ function formatCodec(codec?: string) {
     .toUpperCase()
 }
 
-function formatBackend(active: string | undefined, requested: VideoBackend) {
+function formatBackend(active: string | undefined, requested: NativeVideoBackend) {
   const value = active?.toLowerCase()
   if (value?.startsWith('mpv')) return 'mpv'
   if (value?.includes('gstreamer') || value?.includes('gst')) return 'GStreamer'

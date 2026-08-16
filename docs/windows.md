@@ -21,8 +21,14 @@ The default crate features already include `gstreamer-runtime`:
 tauri-plugin-video = { version = "0.1" }
 ```
 
-`auto` and `gstreamer` select the same backend on Windows. mpv is not compiled
-or selected there.
+`backend: 'tauri'` with `backendOptions.tauri.engine` omitted or set to
+`'auto'` selects GStreamer on Windows. Explicit `'gstreamer'` selects the same
+engine. mpv is not compiled or selected there.
+
+The current D3D11 sink safely supports `fit` and `stretch`, but not the common
+API's crop-to-cover mode or arbitrary zoom. The controller therefore reports
+`videoFit: false` and `videoZoom: false`; unsupported cover and zoom requests
+reject instead of being silently treated as stretch.
 
 ## Native layout
 
@@ -33,5 +39,6 @@ layout changes also ask GStreamer to expose its last frame. Closing a controller
 parks the pipeline and hides the child window so a later controller can reuse
 the native surface.
 
-The Windows backend uses the same `platform.windows.buffer` opt-in overrides as
-Linux. Omit them to leave buffering policy to GStreamer.
+The Windows backend uses the same
+`backendOptions.tauri.windows.buffer` opt-in overrides as Linux. Omit them to
+leave buffering policy to GStreamer.

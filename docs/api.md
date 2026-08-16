@@ -1,37 +1,61 @@
-# TypeScript API
+# Tauri adapter API
+
+`@get-air/video-tauri` adds native Tauri playback to the platform-neutral
+[`@get-air/video`](https://github.com/get-air/video) API. The common package
+owns `VideoController`, backend fallback, subtitles, React/SolidTV/Blits
+integrations, and DOM backends including MediaBunny. This package owns only the
+`tauri` adapter and its native settings.
+
+## Client setup
 
 ```ts
-import { attachVideo, type VideoController } from 'tauri-plugin-video-api/headless'
+import {
+  createTauriVideoClient,
+  type NativeVideoBackend,
+  type TauriPlaybackOptions,
+} from '@get-air/video-tauri'
+
+const client = createTauriVideoClient({
+  playback: {
+    android: { decoderFallback: true },
+    linux: { buffer: { maxSeconds: 15 } },
+  },
+})
 ```
 
-## Attach options
+`createTauriVideoClient` returns the core `VideoClient`. Its `attach` method has
+the same signature on every platform:
 
 ```ts
-interface AttachVideoOptions {
-  source: string | VideoSource
-  backend?: 'auto' | 'media3' | 'libvlc' | 'gstreamer' | 'mpv'
-  surfaceMode?: 'dom' | 'transparent-canvas'
-  autoplay?: boolean
-  suspendWhenHidden?: boolean
-  deviceProfile?: 'auto' | 'mobile' | 'tv' | 'desktop'
-  platform?: PlatformPlaybackOptions
-  controlRegions?: Element | Iterable<Element>
-  signal?: AbortSignal
-}
+const player = await client.attach(video, {
+  source: { uri, headers, cookies, userAgent, referrer },
+  backend: 'tauri',
+  backendOptions: {
+    tauri: { engine: 'auto' },
+  },
+  controlRegions: document.querySelectorAll('.player-overlay'),
+})
 ```
 
-`auto` selects GStreamer on Linux and Windows and Media3 on Android. `mpv` and
-`libvlc` are explicit settings; playback never switches engines after an error.
+Client defaults and per-attachment settings are merged. Per-attachment settings
+win.
+
+## Tauri settings
 
 ```ts
-interface VideoSource {
-  uri: string
-  headers?: Record<string, string>
-  cookies?: string
-  userAgent?: string
-  referrer?: string
-  tlsCaFile?: string
-  startPositionSeconds?: number
+type NativeVideoBackend =
+  | 'auto'
+  | 'media3'
+  | 'libvlc'
+  | 'gstreamer'
+  | 'mpv'
+
+interface TauriPlaybackOptions {
+  engine?: NativeVideoBackend
+  android?: AndroidPlaybackOptions
+  androidTv?: AndroidPlaybackOptions
+  linux?: LinuxPlaybackOptions
+  windows?: WindowsPlaybackOptions
 }
 
 interface NativeBufferOptions {
@@ -49,71 +73,152 @@ interface AndroidPlaybackOptions {
   tunneling?: boolean
 }
 
-interface PlatformPlaybackOptions {
-  android?: AndroidPlaybackOptions
-  androidTv?: AndroidPlaybackOptions
-  linux?: { buffer?: NativeBufferOptions }
-  windows?: { buffer?: NativeBufferOptions }
+interface LinuxPlaybackOptions {
+  buffer?: NativeBufferOptions
+}
+
+interface WindowsPlaybackOptions {
+  buffer?: NativeBufferOptions
 }
 ```
 
-Omit `buffer` to let Media3, LibVLC, GStreamer, or mpv manage buffering using
-its own stream-aware defaults. Overrides are demand-allocated targets, not
-memory reservations, and do not include decoded frames or GPU textures.
+`backend: 'tauri'` selects this adapter.
+`backendOptions.tauri.engine` selects the native implementation behind it.
+Engine names are not standalone core backend IDs.
 
-`decoderFallback` only controls Media3's internal decoder selection. The
-default Dolby Vision mode selects the HEVC base layer for problematic profile 7
-device decoders; set `platform` to leave selection entirely to Android.
+Omit `buffer` to leave cache policy to Media3, LibVLC, GStreamer, or mpv.
+Overrides are demand-allocated encoded-data targets, not process-memory limits;
+decoded frames, decoder reference surfaces, GPU textures, and the WebView remain
+outside them.
 
-## Controller
+`decoderFallback` lets Media3 try another installed MediaCodec decoder without
+switching to LibVLC. `androidTv` is merged over `android` when the core attach
+options use `deviceProfile: 'tv'`.
 
-```ts
-interface VideoController extends EventTarget {
-  readonly element: HTMLVideoElement
-  readonly sessionId: string
-  readonly media: MediaInfo
-  readonly tracks: readonly MediaTrack[]
-  play(): Promise<void>
-  pause(): void
-  seek(positionSeconds: number): Promise<void>
-  selectTrack(kind: 'video' | 'audio' | 'subtitle', trackId?: string): Promise<void>
-  setVolume(volume: number): Promise<void>
-  setVideoFit(mode: 'fit' | 'cover' | 'stretch'): Promise<void>
-  setVideoZoom(scale: number): Promise<void>
-  stats(): Promise<SessionStats>
-  bufferedAhead(): number
-  playbackQuality(): PlaybackQuality
-  refreshLayout(): void
-  registerControls(target: Element | Iterable<Element>): () => void
-  destroy(): Promise<void>
-}
-```
+## Ordered backends
 
-Always call `destroy()` or abort the supplied signal when the owning view
-unmounts.
-
-## Layout, transparency, and controls
-
-The supplied `<video>` is an ordinary layout anchor. It may be placed inside
-grids, flex layouts, positioned cards, and nested scroll containers. When a
-native session opens, the package makes the WebView backing layer transparent,
-temporarily clears the anchor's ancestor backgrounds, and reconstructs those
-backgrounds around the exact native rectangle. Solid colors, gradients,
-background images, padding, borders, viewport clipping, and nested overflow
-clipping are handled without changing the application's authored CSS. Ancestor
-class/style changes and reparenting are observed and repaired automatically.
-
-The compositor also clips unrelated DOM branches only where they cross the
-aperture. This matters for fixed/fullscreen players: an opaque header or old page
-content geometrically behind the player cannot accidentally cover the native
-video. Intentional controls and overlays are exempt. They do not have to overlap
-the video or share its parent, but UI that does cross the video must be registered
-through `controlRegions`, `registerControls()`, or the
-`data-tauri-video-controls` attribute. A toolbar or portal works normally:
+The Tauri client retains every built-in adapter from `@get-air/video`. Backend
+selection and fallback therefore use the common API:
 
 ```ts
-const player = await attachVideo(document.querySelector('video')!, {
+const player = await client.attach(video, {
   source: movieUrl,
+  backend: ['mediabunny', 'tauri'],
+  backendOptions: {
+    mediabunny: { parallelism: 2 },
+    tauri: { engine: 'gstreamer' },
+  },
+})
+```
+
+MediaBunny is loaded and executed by `@get-air/video` directly in the DOM. This
+adapter is invoked only if the ordered selection reaches `tauri`.
+
+## Convenience entrypoints
+
+For applications that do not need to inject a client, this package exposes a
+default Tauri-enabled façade:
+
+```ts
+import { attachTauriVideo, attachVideo } from '@get-air/video-tauri'
+
+const native = await attachTauriVideo(video, { source: movieUrl })
+const automatic = await attachVideo(video, { source: movieUrl })
+```
+
+`attachTauriVideo` forces `backend: 'tauri'`. `attachVideo` uses the common
+`auto` ordering with the Tauri adapter installed. Explicit client injection is
+recommended for applications with dependency layers, tests, or multiple player
+configurations.
+
+Advanced integrations can use `tauriVideoBackend(defaults)` to obtain the raw
+`VideoBackendAdapter`, or `attachTauriBackend` to open a backend controller
+without the stable switching façade.
+
+## React and canvas integrations
+
+Framework integrations remain in `@get-air/video`; pass the client as a prop or
+option:
+
+```tsx
+import { VideoPlayer } from '@get-air/video/react'
+import { createTauriVideoClient } from '@get-air/video-tauri'
+
+const client = createTauriVideoClient()
+
+export function Player() {
+  return <VideoPlayer
+    client={client}
+    source={movieUrl}
+    options={{
+      backend: 'tauri',
+      backendOptions: { tauri: { engine: 'auto' } },
+    }}
+  />
+}
+```
+
+```ts
+import { attachBlitsVideo } from '@get-air/video/blits'
+
+const player = await attachBlitsVideo({
+  client,
+  canvas,
+  rect,
+  source: movieUrl,
+  backend: 'tauri',
+})
+```
+
+`VideoPlayer`, `TvVideoPlayer`, `attachCanvasVideo`, `attachBlitsVideo`, and the
+SolidTV adapter all accept the same client.
+
+## Effect layer
+
+```ts
+import { layerHttpTransport } from '@get-air/http/effect'
+import {
+  attachVideoEffect,
+  layerTauriVideoBackend,
+  VideoPlayerService,
+} from '@get-air/video-tauri/effect'
+import { Effect, Layer } from 'effect'
+
+const InfrastructureLive = Layer.mergeAll(
+  layerHttpTransport({ fetch: (request) => fetch(request) }),
+  layerTauriVideoBackend({ android: { decoderFallback: true } }),
+)
+const VideoLive = VideoPlayerService.Default.pipe(
+  Layer.provideMerge(InfrastructureLive),
+)
+
+const program = attachVideoEffect(video, {
+  source: movieUrl,
+  backend: 'tauri',
+})
+
+const controller = await Effect.runPromise(program.pipe(Effect.provide(VideoLive)))
+await Effect.runPromise(controller.play())
+```
+
+`layerTauriVideoBackend` supplies the core backend-registry service. The
+returned `EffectVideoController` keeps playback and lifecycle operations in the
+Effect channel; the Promise and Effect surfaces share the same adapter
+implementation.
+
+## Native layout and controls
+
+The common controller's `<video>` element is the native geometry anchor. This
+adapter tracks its visible CSS rectangle, places the native surface first, then
+commits the matching WebView aperture. Layout changes do not expose an empty
+hole while the native surface is still at old coordinates.
+
+Register intentional overlay UI through any common mechanism:
+
+```ts
+const player = await client.attach(video, {
+  source: movieUrl,
+  backend: 'tauri',
   controlRegions: document.querySelectorAll('.player-overlay'),
 })
 
@@ -121,57 +226,11 @@ const unregister = player.registerControls(document.querySelector('.transport')!
 // Later: unregister(); await player.destroy()
 ```
 
-React's `VideoPlayer` installs its own scoped CSS; importing a separate
-stylesheet is not required. `VideoControlRegion` and `useVideoControlRegion()`
-provide the same control-region marker for UI mounted elsewhere.
+Declarative markup uses the backend-neutral `data-air-video-controls` marker.
 
-The native renderer is rectangular. Border radii and rectangular overflow clips
-are recreated by the compositor, but arbitrary 3D transforms, rotation, pseudo-
-element-only masks, and custom non-rectangular CSS masks on the video anchor
-cannot be reproduced by the platform surface.
+Always call `destroy()` or abort the supplied signal when the owning view
+unmounts. `load()` keeps controller identity and subscriptions stable while
+replacing the active source/backend session.
 
-## Blits canvas adapter
-
-```ts
-import {
-  attachBlitsVideo,
-  blitsVideoHole,
-  transparentBlitsSettings,
-} from 'tauri-plugin-video-api/blits'
-```
-
-`attachBlitsVideo` creates and owns an invisible `<video>` geometry anchor,
-maps Blits authored coordinates through the live canvas bounds, and selects the
-explicit `transparent-canvas` surface mode. It returns the same
-`VideoController` contract plus `anchor` and `updateLayout()`. A rect getter can
-be used for animated layouts:
-
-```ts
-const rect = { x: 426, y: 164, width: 1068, height: 600 }
-const player = await attachBlitsVideo({
-  canvas,
-  rect: () => rect,
-  source: movieUrl,
-  autoplay: true,
-})
-```
-
-Spread `transparentBlitsSettings` into `Blits.Launch`. It pins the renderer to a
-transparent clear color and keeps per-frame clearing enabled so an old opaque
-frame cannot remain in the aperture.
-
-The canvas is one composited bitmap, so DOM background reconstruction cannot
-cut through one of its opaque WebGL quads. Apply `blitsVideoHole(rect, radius)`
-to the opaque Blits background node itself:
-
-```ts
-const backgroundShader = blitsVideoHole(rect, 24)
-```
-
-Bind `backgroundShader` to that node's `shader` attribute. Render ordinary
-Blits controls afterward; their pixels naturally appear above the native video.
-No decoded video frame passes through JavaScript, WebGL, or Canvas2D.
-
-The low-level `surfaceMode: 'transparent-canvas'` option is explicit and never
-selected automatically. Prefer `attachBlitsVideo`, which also handles canvas
-scaling, lifecycle cleanup, and document transparency.
+For the complete controller, events, subtitle, and capability contracts, see
+the [`@get-air/video` API documentation](https://github.com/get-air/video/blob/main/docs/api.md).

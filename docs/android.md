@@ -1,13 +1,20 @@
 # Android and Android TV
 
-The default backend is Media3: it demuxes the source, MediaCodec decodes it, and
+The default native engine is Media3: it demuxes the source, MediaCodec decodes it, and
 `PlayerView` presents into a direct `SurfaceView`. The Tauri WebView stays above
 that surface for controls and HTML overlays.
 
-LibVLC is retained as an explicit backend only:
+LibVLC is retained as an explicit engine only:
 
 ```ts
-await attachVideo(video, { source: uri, backend: 'libvlc' })
+import { createTauriVideoClient } from '@get-air/video-tauri'
+
+const client = createTauriVideoClient()
+await client.attach(video, {
+  source: uri,
+  backend: 'tauri',
+  backendOptions: { tauri: { engine: 'libvlc' } },
+})
 ```
 
 Media3 errors are returned to the caller. There is no Media3-to-LibVLC startup
@@ -16,14 +23,17 @@ timer, codec heuristic, retry loop, or automatic handoff.
 ## Settings
 
 ```ts
-await attachVideo(video, {
+await client.attach(video, {
   source: { uri, headers, cookies, userAgent, referrer },
-  backend: 'auto',
+  backend: 'tauri',
   deviceProfile: 'tv',
-  platform: {
-    android: {
-      decoderFallback: true,
-      dolbyVision: 'hevc-base-layer',
+  backendOptions: {
+    tauri: {
+      engine: 'media3',
+      android: {
+        decoderFallback: true,
+        dolbyVision: 'hevc-base-layer',
+      },
     },
   },
 })
@@ -35,7 +45,7 @@ HEVC base layer by default because some TV decoders advertise DV support but
 render black; use `dolbyVision: 'platform'` to disable that workaround.
 
 When buffer options are omitted, Media3 and LibVLC own their cache behavior.
-Explicit values tune the selected backend and are filled on demand.
+Explicit values tune the selected engine and are filled on demand.
 
 For a private media PKI, set `TAURI_VIDEO_EXTRA_CA` during the Android build and
 use `tlsCaFile: 'bundled'`. Hostname verification remains enabled.

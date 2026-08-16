@@ -824,6 +824,9 @@ mod linux_gstreamer {
                 "crop" => {
                     player.gtk_sink.set_property("force-aspect-ratio", false);
                 }
+                "stretch" => {
+                    player.gtk_sink.set_property("force-aspect-ratio", false);
+                }
                 "track" => select_stream(player, payload.index, true)?,
                 "deselectTrack" => select_stream(player, payload.index, false)?,
                 action => {
