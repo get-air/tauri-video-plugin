@@ -22,10 +22,11 @@ jobs:
           package-manager-cache: false
       - run: npm install --global npm@11.19.0
       - run: npm ci
-      - name: Verify stable release tag
+      - name: Verify synchronized release metadata
+        run: npm run check:release -- --tag "$GITHUB_REF_NAME"
+      - name: Reject prerelease version from stable workflow
         run: |
           package_version=$(node --print "require('./package.json').version")
-          test "$GITHUB_REF_NAME" = "v$package_version"
           case "$package_version" in
             *-*) echo "Prerelease versions must use a non-latest npm release workflow"; exit 1 ;;
           esac

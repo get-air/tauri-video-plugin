@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-native-diagnostics"
+description = "Enables the native_diagnostics command without any pre-configured scope."
+commands.allow = ["native_diagnostics"]
+
+[[permission]]
+identifier = "deny-native-diagnostics"
+description = "Denies the native_diagnostics command without any pre-configured scope."
+commands.deny = ["native_diagnostics"]

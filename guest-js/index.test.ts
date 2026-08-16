@@ -1,18 +1,32 @@
 // @vitest-environment happy-dom
 
-import type { BackendVideoController, VideoPluginError } from '@get-air/video'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+import {
+  VIDEO_PLAYER_ERROR_MARKER,
+  type BackendVideoController,
+  type VideoPluginError,
+} from '@get-air/video'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 
-import { attachTauriBackend } from './index'
+import {
+  attachTauriBackend,
+  getTauriVideoDiagnostics,
+  TAURI_VIDEO_PACKAGE_NAME,
+  TAURI_VIDEO_PACKAGE_VERSION,
+  TAURI_VIDEO_PROTOCOL_VERSION,
+} from './index'
 import {
   sameNativeSurfacePosition,
   snapNativeSurfaceLayout,
   visibleSurfaceBounds,
 } from './native-surface-layout'
+import { clearVerifiedTauriVideoProtocolForTesting } from './protocol'
 
 interface TestSnapshot {
   durationSeconds: number
@@ -61,6 +75,7 @@ async function attach(
 }
 
 beforeEach(() => {
+  clearVerifiedTauriVideoProtocolForTesting()
   vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows NT 10.0')
   snapshot = {
     durationSeconds: 120,
@@ -87,6 +102,13 @@ beforeEach(() => {
   }
   mocks.invoke.mockReset()
   mocks.invoke.mockImplementation(async (command: unknown) => {
+    if (commandName(command) === 'native_diagnostics') {
+      return {
+        protocolVersion: TAURI_VIDEO_PROTOCOL_VERSION,
+        crateName: 'tauri-plugin-video',
+        crateVersion: '0.1.0',
+      }
+    }
     if (commandName(command) === 'native_open'
       || commandName(command) === 'native_control'
       || commandName(command) === 'native_stats') {
@@ -104,6 +126,103 @@ afterEach(async () => {
 })
 
 describe('native controller contract', () => {
+  it('keeps package diagnostics aligned with package.json', () => {
+    const manifest = JSON.parse(
+      readFileSync(join(process.cwd(), 'package.json'), 'utf8'),
+    ) as { name: string; version: string }
+
+    expect(TAURI_VIDEO_PACKAGE_NAME).toBe(manifest.name)
+    expect(TAURI_VIDEO_PACKAGE_VERSION).toBe(manifest.version)
+  })
+
+  it('reports diagnostics, verifies before native_open, and caches a successful check', async () => {
+    await expect(getTauriVideoDiagnostics()).resolves.toEqual({
+      protocolVersion: TAURI_VIDEO_PROTOCOL_VERSION,
+      packageName: TAURI_VIDEO_PACKAGE_NAME,
+      packageVersion: TAURI_VIDEO_PACKAGE_VERSION,
+      crateName: 'tauri-plugin-video',
+      crateVersion: '0.1.0',
+    })
+    mocks.invoke.mockClear()
+
+    await attach()
+    await attach()
+
+    expect(mocks.invoke.mock.calls.map(([command]) => commandName(command)))
+      .toEqual(['native_diagnostics', 'native_open', 'native_open'])
+    const open = mocks.invoke.mock.calls.find(([command]) => commandName(command) === 'native_open')
+    expect((open?.[1] as { payload?: unknown })?.payload).toMatchObject({
+      protocolVersion: TAURI_VIDEO_PROTOCOL_VERSION,
+      packageVersion: TAURI_VIDEO_PACKAGE_VERSION,
+    })
+  })
+
+  it('rejects a different native protocol before opening a player', async () => {
+    mocks.invoke.mockImplementation(async (command: unknown) => {
+      if (commandName(command) === 'native_diagnostics') {
+        return {
+          protocolVersion: TAURI_VIDEO_PROTOCOL_VERSION + 1,
+          crateName: 'tauri-plugin-video',
+          crateVersion: '0.2.0',
+        }
+      }
+      throw new Error(`unexpected command: ${commandName(command)}`)
+    })
+
+    await expect(attach()).rejects.toMatchObject({
+      _tag: 'VideoNativeProtocolMismatchError',
+      expectedProtocolVersion: TAURI_VIDEO_PROTOCOL_VERSION,
+      actualProtocolVersion: TAURI_VIDEO_PROTOCOL_VERSION + 1,
+      packageName: TAURI_VIDEO_PACKAGE_NAME,
+      packageVersion: TAURI_VIDEO_PACKAGE_VERSION,
+      crateName: 'tauri-plugin-video',
+      crateVersion: '0.2.0',
+    })
+    expect(mocks.invoke.mock.calls.map(([command]) => commandName(command)))
+      .toEqual(['native_diagnostics'])
+  })
+
+  it('reports a missing diagnostics command as a typed protocol mismatch', async () => {
+    mocks.invoke.mockRejectedValueOnce(new Error('Command native_diagnostics not found'))
+
+    const failure = await attach().then(
+      () => undefined,
+      (error: unknown) => error as {
+        _tag: string
+        expectedProtocolVersion: number
+        actualProtocolVersion?: number
+        packageName: string
+        packageVersion: string
+        cause?: string
+      },
+    )
+    expect(failure).toMatchObject({
+      _tag: 'VideoNativeProtocolMismatchError',
+      expectedProtocolVersion: TAURI_VIDEO_PROTOCOL_VERSION,
+      packageName: TAURI_VIDEO_PACKAGE_NAME,
+      packageVersion: TAURI_VIDEO_PACKAGE_VERSION,
+    })
+    expect(failure?.actualProtocolVersion).toBeUndefined()
+    expect(failure?.cause).toBe('Command native_diagnostics not found')
+    expect((failure as Record<PropertyKey, unknown> | undefined)?.[VIDEO_PLAYER_ERROR_MARKER])
+      .toBe(true)
+    expect(mocks.invoke.mock.calls.map(([command]) => commandName(command)))
+      .toEqual(['native_diagnostics'])
+
+    mocks.invoke.mockImplementation(async (command: unknown) => {
+      if (commandName(command) === 'native_diagnostics') {
+        return {
+          protocolVersion: TAURI_VIDEO_PROTOCOL_VERSION,
+          crateName: 'tauri-plugin-video',
+          crateVersion: '0.1.0',
+        }
+      }
+      if (commandName(command) === 'native_open') return structuredClone(snapshot)
+      return undefined
+    })
+    await expect(attach()).resolves.toMatchObject({ sessionId: expect.any(String) })
+  })
+
   it('exposes stable, unique, platform-correct session IDs', async () => {
     const first = await attach()
     const second = await attach()

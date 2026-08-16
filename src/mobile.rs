@@ -9,7 +9,7 @@ use tauri::{
 };
 
 #[cfg(target_os = "ios")]
-compile_error!("tauri-plugin-video v0.1 supports Android, Android TV, and Linux only");
+compile_error!("tauri-plugin-video supports Android and Android TV, but not iOS");
 
 pub fn init<R: Runtime, C: DeserializeOwned>(
     _app: &AppHandle<R>,

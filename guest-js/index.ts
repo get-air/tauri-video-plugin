@@ -23,12 +23,27 @@ import {
   type SurfaceCompositorFrame,
   type VideoControlsTarget,
 } from './native-surface-compositor'
+import {
+  TAURI_VIDEO_PACKAGE_VERSION,
+  TAURI_VIDEO_PROTOCOL_VERSION,
+  verifyTauriVideoProtocol,
+} from './protocol'
 
 export {
   registerVideoControls,
   VIDEO_CONTROLS_ATTRIBUTE,
   type VideoControlsTarget,
 } from './native-surface-compositor'
+export {
+  getTauriVideoDiagnostics,
+  TAURI_VIDEO_PACKAGE_NAME,
+  TAURI_VIDEO_PACKAGE_VERSION,
+  TAURI_VIDEO_PROTOCOL_VERSION,
+  verifyTauriVideoProtocol,
+  type NativeVideoPluginDiagnostics,
+  type TauriVideoDiagnostics,
+  type VideoNativeProtocolMismatchError,
+} from './protocol'
 
 const COMMAND = 'plugin:video|'
 
@@ -114,6 +129,7 @@ export async function attachTauriBackend(
   if (!/Android|Linux|Windows/i.test(navigator.userAgent)) {
     throw new Error('Native video playback is currently supported only on Android, Linux, and Windows')
   }
+  await verifyTauriVideoProtocol()
   const controller = new NativeSurfaceVideoController(element, options)
   try {
     await controller.start()
@@ -223,6 +239,8 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     try {
       this.#snapshot = await invoke<NativePlaybackSnapshot>(`${COMMAND}native_open`, {
         payload: {
+          protocolVersion: TAURI_VIDEO_PROTOCOL_VERSION,
+          packageVersion: TAURI_VIDEO_PACKAGE_VERSION,
           sessionKey: this.#sessionKey,
           ...source,
           ...layout,

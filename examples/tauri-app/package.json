@@ -14,7 +14,7 @@
     "nanoid": "^3.3.18"
   },
   "dependencies": {
-    "@get-air/video": "^0.1.0",
+    "@get-air/video": "^0.1.1",
     "@get-air/video-tauri": "file:../..",
     "@noriginmedia/norigin-spatial-navigation": "^3.3.0",
     "@tauri-apps/api": "^2.0.0",

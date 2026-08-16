@@ -1,6 +1,7 @@
 [default]
-description = "Open and control the native video player, update its layout, and read playback statistics"
+description = "Verify, open, and control the native video player, update its layout, and read playback statistics"
 permissions = [
+  "allow-native-diagnostics",
   "allow-native-open",
   "allow-native-control",
   "allow-native-layout",

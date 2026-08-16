@@ -1,9 +1,10 @@
 ## Default Permission
 
-Open and control the native video player, update its layout, and read playback statistics
+Verify, open, and control the native video player, update its layout, and read playback statistics
 
 #### This default permission set includes the following:
 
+- `allow-native-diagnostics`
 - `allow-native-open`
 - `allow-native-control`
 - `allow-native-layout`
@@ -67,6 +68,32 @@ Enables the native_control command without any pre-configured scope.
 <td>
 
 Denies the native_control command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`video:allow-native-diagnostics`
+
+</td>
+<td>
+
+Enables the native_diagnostics command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`video:deny-native-diagnostics`
+
+</td>
+<td>
+
+Denies the native_diagnostics command without any pre-configured scope.
 
 </td>
 </tr>

@@ -1,6 +1,6 @@
 [package]
 name = "tauri-plugin-video"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Air contributors"]
 description = "Native video playback for Tauri using platform media engines"
 edition = "2021"
@@ -13,8 +13,11 @@ keywords = ["tauri", "video", "gstreamer", "mkv", "android-tv"]
 categories = ["multimedia::video", "api-bindings"]
 exclude = [
   "/.github",
+  "/.agents",
   "/.codebase-memory",
   "/.impeccable",
+  "/AGENTS.md",
+  "/CONTRIBUTING.md",
   "/adapter",
   "/android/.gradle",
   "/android/build",

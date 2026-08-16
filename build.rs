@@ -1,4 +1,5 @@
 const COMMANDS: &[&str] = &[
+    "native_diagnostics",
     "native_open",
     "native_control",
     "native_layout",

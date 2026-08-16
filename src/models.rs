@@ -2,6 +2,28 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Version of the JavaScript-to-Rust command, payload, response, and error
+/// contract. Additive diagnostic or capability fields do not change it.
+pub const VIDEO_PLUGIN_PROTOCOL_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePluginDiagnostics {
+    pub protocol_version: u32,
+    pub crate_name: String,
+    pub crate_version: String,
+}
+
+impl NativePluginDiagnostics {
+    pub fn current() -> Self {
+        Self {
+            protocol_version: VIDEO_PLUGIN_PROTOCOL_VERSION,
+            crate_name: env!("CARGO_PKG_NAME").to_owned(),
+            crate_version: env!("CARGO_PKG_VERSION").to_owned(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum TrackKind {
@@ -13,6 +35,13 @@ pub enum TrackKind {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeOpenRequest {
+    /// Protocol and adapter version are required by protocol 1. They remain
+    /// optional while deserializing so legacy JavaScript receives a deliberate
+    /// protocol error instead of a generic invalid-payload rejection.
+    #[serde(default)]
+    pub protocol_version: Option<u32>,
+    #[serde(default)]
+    pub package_version: Option<String>,
     /// Identifies the JavaScript controller that owns the singleton native surface.
     /// Late cleanup from an older React render must not close a newer player.
     #[serde(default)]

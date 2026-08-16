@@ -40,7 +40,7 @@ Add and register the Rust plugin:
 
 ```toml
 [dependencies]
-tauri-plugin-video = "0.1"
+tauri-plugin-video = "0.2"
 ```
 
 ```rust
@@ -50,6 +50,17 @@ tauri::Builder::default()
 ```
 
 Add `video:default` to the Tauri capability used by the window.
+Applications that enumerate individual plugin permissions instead must include
+`video:allow-native-diagnostics` alongside their existing native commands.
+
+The adapter verifies an integer JS↔Rust protocol version through the read-only
+`native_diagnostics` command before `native_open`. Mismatched package/crate
+installations fail early with `VideoNativeProtocolMismatchError` and include
+the installed package/crate versions when available. Optional diagnostic and
+capability fields are additive; only incompatible IPC changes increment the
+protocol.
+Rust also validates protocol/package metadata carried by `native_open`, so a
+new native plugin rejects legacy JavaScript before allocating a player.
 
 GStreamer is enabled by default only on Linux and Windows; the desktop system
 dependencies are target-scoped and are not built into Android applications. To
@@ -57,7 +68,7 @@ make mpv selectable on Linux, install libmpv development files and enable its
 feature:
 
 ```toml
-tauri-plugin-video = { version = "0.1", features = ["gstreamer-runtime", "mpv-runtime"] }
+tauri-plugin-video = { version = "0.2", features = ["gstreamer-runtime", "mpv-runtime"] }
 ```
 
 ## Inject the Tauri backend
@@ -242,21 +253,36 @@ See the platform notes for engine-specific setup and acceptance checks:
 Runnable integration applications live in the
 [React/Tauri example](https://github.com/get-air/tauri-video-plugin/tree/main/examples/tauri-app)
 and the
-[SolidTV/Blits example](https://github.com/get-air/tauri-video-plugin/tree/main/examples/solid-tv-blits-app).
+[SolidTV/Blits
+example](https://github.com/get-air/tauri-video-plugin/tree/main/examples/solid-tv-blits-app).
 Browser-only MediaBunny and SolidTV examples live in
 [`get-air/video`](https://github.com/get-air/video).
 
-## Maintainer release bootstrap
+## Versioning
 
-The first `tauri-plugin-video` version must be published manually before
-crates.io can associate a trusted publisher with it. After that first publish,
-register `get-air/tauri-video-plugin` and the workflow file
-`publish-crate.yml` as the crate's GitHub trusted publisher, then set the
-repository variable `CRATES_IO_TRUSTED_PUBLISHING` to `enabled`. Future stable
-GitHub releases publish through a short-lived crates.io token; until the
-variable is enabled, the crate publishing job stays skipped. The workflow also
-treats an already-published version as success, so enabling it during the
-bootstrap release cannot upload the same crate twice.
+`@get-air/video-tauri` and `tauri-plugin-video` always release at the exact
+same version. `@get-air/video` is independent and compatibility is expressed
+by the adapter's declared package range. Before 1.0, compatible changes
+increment the patch while breaking API or IPC changes increment the
+compatibility epoch. See the complete
+[versioning policy and compatibility table](VERSIONING.md).
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for repository boundaries, JavaScript
+and native validation, release rules, and the clone-safe contributor skills.
+
+## Maintainer publishing
+
+This repository's npm and crates.io trusted publishers are configured. One
+stable `vX.Y.Z` GitHub Release triggers both OIDC workflows after their release
+metadata gates pass. Keep the repository variable
+`CRATES_IO_TRUSTED_PUBLISHING` set to `enabled`; it is an explicit safety gate
+for the crate job. Neither workflow uses a long-lived npm or Cargo token.
+
+A fork that adopts a new package or crate name must bootstrap its first version
+before its registries can associate a trusted publisher. That bootstrap does
+not apply to normal releases from `get-air/tauri-video-plugin`.
 
 ## License
 

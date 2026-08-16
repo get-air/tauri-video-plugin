@@ -319,6 +319,18 @@
           "markdownDescription": "Denies the native_control command without any pre-configured scope."
         },
         {
+          "description": "Enables the native_diagnostics command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-native-diagnostics",
+          "markdownDescription": "Enables the native_diagnostics command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the native_diagnostics command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-native-diagnostics",
+          "markdownDescription": "Denies the native_diagnostics command without any pre-configured scope."
+        },
+        {
           "description": "Enables the native_layout command without any pre-configured scope.",
           "type": "string",
           "const": "allow-native-layout",
@@ -355,10 +367,10 @@
           "markdownDescription": "Denies the native_stats command without any pre-configured scope."
         },
         {
-          "description": "Open and control the native video player, update its layout, and read playback statistics\n#### This default permission set includes:\n\n- `allow-native-open`\n- `allow-native-control`\n- `allow-native-layout`\n- `allow-native-stats`\n- `allow-native-close`",
+          "description": "Verify, open, and control the native video player, update its layout, and read playback statistics\n#### This default permission set includes:\n\n- `allow-native-diagnostics`\n- `allow-native-open`\n- `allow-native-control`\n- `allow-native-layout`\n- `allow-native-stats`\n- `allow-native-close`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Open and control the native video player, update its layout, and read playback statistics\n#### This default permission set includes:\n\n- `allow-native-open`\n- `allow-native-control`\n- `allow-native-layout`\n- `allow-native-stats`\n- `allow-native-close`"
+          "markdownDescription": "Verify, open, and control the native video player, update its layout, and read playback statistics\n#### This default permission set includes:\n\n- `allow-native-diagnostics`\n- `allow-native-open`\n- `allow-native-control`\n- `allow-native-layout`\n- `allow-native-stats`\n- `allow-native-close`"
         }
       ]
     }

@@ -78,6 +78,7 @@ impl Builder {
     pub fn build<R: Runtime>(self) -> TauriPlugin<R> {
         TauriBuilder::new("video")
             .invoke_handler(tauri::generate_handler![
+                commands::native_diagnostics,
                 commands::native_open,
                 commands::native_control,
                 commands::native_layout,

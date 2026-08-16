@@ -10,6 +10,8 @@ import {
   type VideoSource,
 } from '@get-air/video'
 
+import type { VideoNativeProtocolMismatchError } from '../guest-js/protocol-error'
+
 import {
   attachTauriBackend as attachNativeBackend,
   type AndroidPlaybackOptions as LegacyAndroidPlaybackOptions,
@@ -26,6 +28,16 @@ export {
   VIDEO_CONTROLS_ATTRIBUTE,
   type VideoControlsTarget,
 } from '../guest-js/native-surface-compositor'
+export {
+  getTauriVideoDiagnostics,
+  TAURI_VIDEO_PACKAGE_NAME,
+  TAURI_VIDEO_PACKAGE_VERSION,
+  TAURI_VIDEO_PROTOCOL_VERSION,
+  verifyTauriVideoProtocol,
+  type NativeVideoPluginDiagnostics,
+  type TauriVideoDiagnostics,
+  type VideoNativeProtocolMismatchError,
+} from '../guest-js/protocol'
 
 // These aliases intentionally keep the adapter's native configuration public
 // without putting any native concept in @get-air/video.
@@ -48,6 +60,10 @@ export interface TauriPlaybackOptions {
 declare module '@get-air/video' {
   interface VideoBackendOptionsMap {
     tauri: TauriPlaybackOptions
+  }
+
+  interface VideoPlayerErrorMap {
+    VideoNativeProtocolMismatchError: VideoNativeProtocolMismatchError
   }
 }
 

@@ -31,6 +31,8 @@ const config: RollupOptions = {
       include: [
         'adapter/**/*.ts',
         'guest-js/index.ts',
+        'guest-js/protocol.ts',
+        'guest-js/protocol-error.ts',
         'guest-js/native-surface-layout.ts',
         'guest-js/native-surface-compositor.ts',
       ],

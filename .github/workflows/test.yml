@@ -25,9 +25,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav libmpv-dev
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-targets --all-features -- --nocapture
+      - run: cargo test --locked --all-targets --all-features -- --nocapture
       - name: Compile the Solid-TV / Blits example application
-        run: cargo check --manifest-path examples/solid-tv-blits-app/src-tauri/Cargo.toml --all-targets
+        run: cargo check --locked --manifest-path examples/solid-tv-blits-app/src-tauri/Cargo.toml --all-targets
 
   portable-api:
     strategy:
@@ -44,7 +44,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets --no-default-features
+      - run: cargo check --locked --all-targets --no-default-features
 
   windows-native:
     runs-on: windows-latest
@@ -84,11 +84,11 @@ jobs:
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=$env:GSTREAMER_ROOT" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
       - uses: Swatinem/rust-cache@v2
       - name: Compile the Windows GStreamer backend
-        run: cargo test --all-targets --no-default-features --features gstreamer-runtime --no-run
+        run: cargo test --locked --all-targets --no-default-features --features gstreamer-runtime --no-run
       - name: Compile the Windows example application
-        run: cargo check --manifest-path examples/tauri-app/src-tauri/Cargo.toml --all-targets
+        run: cargo check --locked --manifest-path examples/tauri-app/src-tauri/Cargo.toml --all-targets
       - name: Compile the Windows Solid-TV / Blits example application
-        run: cargo check --manifest-path examples/solid-tv-blits-app/src-tauri/Cargo.toml --all-targets
+        run: cargo check --locked --manifest-path examples/solid-tv-blits-app/src-tauri/Cargo.toml --all-targets
 
   guest-api:
     runs-on: ubuntu-latest
@@ -100,6 +100,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Verify release metadata consistency
+        run: npm run check:release
       - run: npm run check
       - run: npm run build
       - name: Verify the adapter bundle boundary

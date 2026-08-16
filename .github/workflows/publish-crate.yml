@@ -10,8 +10,8 @@ permissions:
 
 jobs:
   publish:
-    # The first crate version must be published manually. After registering this
-    # workflow as the crate's trusted publisher, enable the repository variable.
+    # Trusted publishing is configured. This repository variable is an explicit
+    # safety gate and must remain enabled for stable crate releases.
     if: >-
       github.repository == 'get-air/tauri-video-plugin' &&
       github.event.release.prerelease == false &&
@@ -20,17 +20,22 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Verify synchronized release metadata
+        run: npm run check:release -- --tag "$GITHUB_REF_NAME"
       - uses: dtolnay/rust-toolchain@stable
       - name: Install native dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - uses: Swatinem/rust-cache@v2
-      - name: Verify stable release tag
+      - name: Read stable crate version
         id: crate_version
         run: |
-          crate_version=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "tauri-plugin-video"))')
-          test "$GITHUB_REF_NAME" = "v$crate_version"
+          crate_version=$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "tauri-plugin-video"))')
           case "$crate_version" in
             *-*) echo "Prerelease versions must not use the stable crates.io workflow"; exit 1 ;;
           esac

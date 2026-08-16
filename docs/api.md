@@ -40,6 +40,48 @@ const player = await client.attach(video, {
 Client defaults and per-attachment settings are merged. Per-attachment settings
 win.
 
+## Native protocol compatibility
+
+Before `native_open`, the adapter calls the read-only `native_diagnostics`
+command and requires its integer protocol version to match. This catches an npm
+adapter/Rust crate mismatch before a player or native surface is allocated.
+The first successful verification is cached per JavaScript module; failed
+checks remain retryable so startup-order and transient invoke errors can recover.
+`video:default` includes the diagnostic command. Applications that enumerate
+permissions individually must add `video:allow-native-diagnostics`.
+`native_open` also sends the protocol and npm package version; the Rust command
+rejects legacy or mismatched JavaScript before dispatching to a native engine.
+
+```ts
+import {
+  getTauriVideoDiagnostics,
+  TAURI_VIDEO_PROTOCOL_VERSION,
+} from '@get-air/video-tauri'
+
+const diagnostics = await getTauriVideoDiagnostics()
+// {
+//   protocolVersion: <integer>,
+//   packageName: '@get-air/video-tauri',
+//   packageVersion: '<npm version>',
+//   crateName: 'tauri-plugin-video',
+//   crateVersion: '<crate version>'
+// }
+```
+
+An unequal version, malformed response, or older plugin without the diagnostic
+command rejects attachment with `_tag: 'VideoNativeProtocolMismatchError'`.
+The schema-backed error constructor is exported from
+`@get-air/video-tauri/effect`; Promise callers can handle the serializable tag
+and diagnostic fields without loading Effect on the successful path. Those
+fields include `expectedProtocolVersion`, optional `actualProtocolVersion`, the
+npm package name/version, optional native crate name/version, and an optional
+`cause` when diagnostics could not be read.
+
+Adding optional diagnostics or native capability fields is backward-compatible
+and does not increment the protocol. Increment it only for incompatible command
+names, payloads, responses, or serialized error shapes. Keep the npm adapter and
+Rust crate on a compatible published pair.
+
 ## Tauri settings
 
 ```ts

@@ -4,6 +4,14 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(
+        "native video protocol mismatch: expected {expected}, received {actual:?} from @get-air/video-tauri version {package_version:?}"
+    )]
+    ProtocolMismatch {
+        expected: u32,
+        actual: Option<u32>,
+        package_version: Option<String>,
+    },
     #[error("invalid request: {0}")]
     InvalidRequest(String),
     #[error("GStreamer is unavailable: {0}")]
@@ -18,6 +26,7 @@ pub enum Error {
 impl Error {
     pub fn code(&self) -> &'static str {
         match self {
+            Self::ProtocolMismatch { .. } => "PROTOCOL_MISMATCH",
             Self::InvalidRequest(_) => "INVALID_REQUEST",
             Self::RuntimeUnavailable(_) => "RUNTIME_UNAVAILABLE",
             Self::Pipeline(_) => "PIPELINE_FAILED",
@@ -51,6 +60,7 @@ impl Serialize for Error {
             message: self.to_string(),
             recoverable: self.recoverable(),
             stage: match self {
+                Self::ProtocolMismatch { .. } => Some("protocol"),
                 Self::Pipeline(_) => Some("pipeline"),
                 _ => None,
             },
