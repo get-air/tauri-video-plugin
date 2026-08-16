@@ -31,12 +31,4 @@ jobs:
           esac
       - run: npm run ci
       - name: Publish to npm
-        env:
-          # NPM_TOKEN is used only to bootstrap the first package version.
-          # Delete it after configuring this workflow as the trusted publisher.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if test -z "$NODE_AUTH_TOKEN"; then
-            unset NODE_AUTH_TOKEN
-          fi
-          npm publish --access public --provenance
+        run: npm publish --access public --provenance
