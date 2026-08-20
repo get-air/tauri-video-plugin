@@ -6,6 +6,7 @@ import { defineConfig } from 'vite'
 const host = process.env.TAURI_DEV_HOST
 
 export default defineConfig({
+  build: { chunkSizeWarningLimit: 510 },
   plugins: [react()],
   resolve: {
     // The adapter is file-linked in this repository's example. Resolve its

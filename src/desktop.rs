@@ -328,6 +328,7 @@ mod linux {
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(any(feature = "gstreamer-runtime", feature = "mpv-runtime"))]
 mod linux_surface {
     use std::cell::RefCell;
 
@@ -1092,21 +1093,21 @@ mod linux_gstreamer {
     }
 
     fn select_stream(player: &mut NativePlayer, index: i32, enabled: bool) -> Result<()> {
-        let track = player
+        let (kind, id) = player
             .tracks
             .iter()
             .find(|track| track.index == index)
-            .cloned()
+            .map(|track| (track.kind, track.id.clone()))
             .ok_or_else(|| Error::InvalidRequest(format!("unknown native track index {index}")))?;
         player.selected_streams.retain(|id| {
             player
                 .tracks
                 .iter()
                 .find(|item| &item.id == id)
-                .is_some_and(|item| item.kind != track.kind)
+                .is_some_and(|item| item.kind != kind)
         });
         if enabled {
-            player.selected_streams.insert(track.id);
+            player.selected_streams.insert(id);
         }
         let ids: Vec<&str> = player.selected_streams.iter().map(String::as_str).collect();
         if !player
@@ -1127,6 +1128,7 @@ mod linux_mpv {
     use std::{
         cell::{Cell, RefCell},
         ffi::{c_void, CString},
+        fmt::Write as _,
         rc::Rc,
         time::Instant,
     };
@@ -1926,11 +1928,11 @@ mod linux_mpv {
     }
 
     fn encode_mpv_list(values: &[String]) -> String {
-        values
-            .iter()
-            .map(|value| format!("%{}%{}", value.len(), value))
-            .collect::<Vec<_>>()
-            .join(",")
+        values.iter().fold(String::new(), |mut encoded, value| {
+            let separator = if encoded.is_empty() { "" } else { "," };
+            let _ = write!(encoded, "{separator}%{}%{value}", value.len());
+            encoded
+        })
     }
 
     fn mpv_error(error: libmpv2::Error) -> Error {
