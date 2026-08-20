@@ -3,6 +3,12 @@
 Release numbering follows the
 [versioning and compatibility policy](VERSIONING.md).
 
+## 0.3.0
+
+- Remove the `auto` native-engine option and automatic engine-priority configuration.
+- Default omitted engine selection to Media3 on Android and GStreamer on desktop platforms.
+- Open the `@get-air/video` peer compatibility line to `>=0.2.0 <0.3.0` and test against exact core `0.2.0`.
+
 ## 0.2.0
 
 - Made `@get-air/video` a required peer (`>=0.1.1 <0.2.0`) so applications

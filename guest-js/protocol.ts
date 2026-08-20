@@ -14,7 +14,7 @@ export const TAURI_VIDEO_PROTOCOL_VERSION = 1 as const
 export const TAURI_VIDEO_PACKAGE_NAME = '@get-air/video-tauri' as const
 // Kept explicit so diagnostics work in browsers. A focused test enforces that
 // this value cannot drift from package.json during a version bump.
-export const TAURI_VIDEO_PACKAGE_VERSION = '0.2.0' as const
+export const TAURI_VIDEO_PACKAGE_VERSION = '0.3.0' as const
 
 export interface NativeVideoPluginDiagnostics {
   readonly protocolVersion: number

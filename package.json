@@ -1,6 +1,6 @@
 {
   "name": "@get-air/video-tauri",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Air contributors",
   "description": "Native Tauri backend adapter for @get-air/video",
   "license": "MIT OR Apache-2.0",
@@ -71,11 +71,11 @@
     "effect": "^3.22.1"
   },
   "peerDependencies": {
-    "@get-air/video": ">=0.1.1 <0.2.0"
+    "@get-air/video": ">=0.2.0 <0.3.0"
   },
   "devDependencies": {
     "@effect/language-service": "^0.87.2",
-    "@get-air/video": "0.1.1",
+    "@get-air/video": "0.2.0",
     "@rollup/plugin-typescript": "^12.0.0",
     "@types/node": "^24.13.3",
     "happy-dom": "^20.11.2",

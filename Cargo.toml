@@ -1,6 +1,6 @@
 [package]
 name = "tauri-plugin-video"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Air contributors"]
 description = "Native video playback for Tauri using platform media engines"
 edition = "2021"
