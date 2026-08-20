@@ -24,7 +24,7 @@ of the product name.
 - Core must remain a required, bounded, non-optional peer plus an exact tested
   devDependency. It must not return to normal npm dependencies.
 - This repository owns Tauri IPC, native surfaces, and native playback engines.
-  Do not copy MediaBunny, browser players, framework UI, or core controller
+  Do not copy browser players, framework UI, or core controller
   business logic into it.
 - Android dependency graphs must exclude desktop media stacks. Keep Linux and
   Windows dependencies target-scoped and capability claims truthful.

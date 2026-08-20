@@ -76,7 +76,6 @@ export function tauriVideoBackend(
 ): VideoBackendAdapter {
   return {
     id: 'tauri',
-    autoPriority: 250,
     isAvailable: ({ userAgent, global }) => hasTauriRuntime(global)
       && /Android|Linux|Windows/i.test(userAgent),
     open: ({ element, options }) => attachTauriBackend(element, options, defaults),
@@ -121,7 +120,7 @@ export function attachTauriBackend(
   const legacy: NativeAttachVideoOptions = {
     ...options,
     backend: 'tauri',
-    nativeBackend: playback.engine ?? 'auto',
+    nativeBackend: playback.engine,
     platform: {
       android: playback.android,
       androidTv: playback.androidTv,

@@ -199,7 +199,7 @@ internal class VlcPlayer(
             presentedFrames = presented,
             droppedFrames = dropped,
             measuredFps = measuredFps,
-            hardwareBackend = "android-libvlc:auto:surface-view",
+            hardwareBackend = "android-libvlc:hardware:surface-view",
             encodedBytesBuffered = 0L,
             averageFrameProcessingUs = 0.0,
             container = container,

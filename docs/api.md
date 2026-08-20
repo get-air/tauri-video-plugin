@@ -3,7 +3,7 @@
 `@get-air/video-tauri` adds native Tauri playback to the platform-neutral
 [`@get-air/video`](https://github.com/get-air/video) API. The common package
 owns `VideoController`, backend fallback, subtitles, React/SolidTV/Blits
-integrations, and DOM backends including MediaBunny. This package owns only the
+integrations, and DOM backends. This package owns only the
 `tauri` adapter and its native settings.
 
 ## Client setup
@@ -31,7 +31,7 @@ const player = await client.attach(video, {
   source: { uri, headers, cookies, userAgent, referrer },
   backend: 'tauri',
   backendOptions: {
-    tauri: { engine: 'auto' },
+    tauri: { engine: 'gstreamer' },
   },
   controlRegions: document.querySelectorAll('.player-overlay'),
 })
@@ -137,7 +137,7 @@ outside them.
 switching to LibVLC. `androidTv` is merged over `android` when the core attach
 options use `deviceProfile: 'tv'`.
 
-## Ordered backends
+## Explicit backend
 
 The Tauri client retains every built-in adapter from `@get-air/video`. Backend
 selection and fallback therefore use the common API:
@@ -145,16 +145,12 @@ selection and fallback therefore use the common API:
 ```ts
 const player = await client.attach(video, {
   source: movieUrl,
-  backend: ['mediabunny', 'tauri'],
+  backend: 'tauri',
   backendOptions: {
-    mediabunny: { parallelism: 2 },
     tauri: { engine: 'gstreamer' },
   },
 })
 ```
-
-MediaBunny is loaded and executed by `@get-air/video` directly in the DOM. This
-adapter is invoked only if the ordered selection reaches `tauri`.
 
 ## Convenience entrypoints
 
@@ -165,13 +161,13 @@ default Tauri-enabled façade:
 import { attachTauriVideo, attachVideo } from '@get-air/video-tauri'
 
 const native = await attachTauriVideo(video, { source: movieUrl })
-const automatic = await attachVideo(video, { source: movieUrl })
+const explicit = await attachVideo(video, { source: movieUrl, backend: 'tauri' })
 ```
 
-`attachTauriVideo` forces `backend: 'tauri'`. `attachVideo` uses the common
-`auto` ordering with the Tauri adapter installed. Explicit client injection is
-recommended for applications with dependency layers, tests, or multiple player
-configurations.
+`attachTauriVideo` forces `backend: 'tauri'`. `attachVideo` keeps the common
+core default (`html`) unless a backend is supplied. Explicit client injection
+is recommended for applications with dependency layers, tests, or multiple
+player configurations.
 
 Advanced integrations can use `tauriVideoBackend(defaults)` to obtain the raw
 `VideoBackendAdapter`, or `attachTauriBackend` to open a backend controller
@@ -194,7 +190,7 @@ export function Player() {
     source={movieUrl}
     options={{
       backend: 'tauri',
-      backendOptions: { tauri: { engine: 'auto' } },
+      backendOptions: { tauri: { engine: 'gstreamer' } },
     }}
   />
 }

@@ -8,7 +8,7 @@ export default defineConfig({
   resolve: {
     // The local adapter link otherwise creates a second core module graph that
     // real registry consumers do not receive.
-    dedupe: ['@get-air/video', 'effect', 'mediabunny'],
+    dedupe: ['@get-air/video', 'effect'],
   },
   clearScreen: false,
   server: {

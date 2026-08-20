@@ -47,7 +47,7 @@ pub struct NativeOpenRequest {
     #[serde(default)]
     pub session_key: String,
     pub uri: String,
-    /// Playback engine requested by the JavaScript controller. `auto` selects
+    /// Playback engine requested by the JavaScript controller. Omission selects
     /// the platform's primary native backend; alternatives must be explicit.
     #[serde(default)]
     pub backend: Option<String>,

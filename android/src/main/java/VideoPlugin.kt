@@ -180,8 +180,8 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
                 scaleY = 1f
             }
             nativeContainer = containerFromUri(args.uri)
-            val requestedBackend = args.backend?.lowercase() ?: "auto"
-            if (requestedBackend !in setOf("auto", "media3", "libvlc")) {
+            val requestedBackend = args.backend?.lowercase() ?: "media3"
+            if (requestedBackend !in setOf("media3", "libvlc")) {
                 root.visibility = View.GONE
                 deactivateNativeLayout()
                 invoke.reject("backend '$requestedBackend' is not available on Android")

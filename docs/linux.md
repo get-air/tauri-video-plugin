@@ -33,7 +33,7 @@ sink safely supports `fit` and `stretch`, but not crop-to-cover or arbitrary
 zoom, so its controller reports `videoFit: false` and `videoZoom: false` and
 rejects those unsupported operations.
 
-The Tauri adapter's `engine: 'auto'` selects GStreamer on Linux. libmpv is an
+An omitted engine selects GStreamer on Linux. libmpv is an
 explicit alternative, and requesting it without `mpv-runtime` returns an
 actionable runtime error.
 
@@ -80,7 +80,7 @@ whole-process memory limits. Decoder reference frames, audio/video output
 queues, GL textures, subtitle-composition textures, allocator overhead, and the
 WebView remain outside the byte target. GStreamer's `encodedBytesBuffered`
 snapshot is an estimate only when an explicit byte target exists; it reports
-zero when the backend owns an unknown automatic target. Measure process RSS/PSS
+zero when the backend owns an unknown native target. Measure process RSS/PSS
 on deployment hardware before overriding either backend.
 
 ## GStreamer 1.26+ subtitle composition

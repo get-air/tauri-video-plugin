@@ -47,7 +47,7 @@ export {
 
 const COMMAND = 'plugin:video|'
 
-export type NativeVideoBackend = 'auto' | 'media3' | 'libvlc' | 'gstreamer' | 'mpv'
+export type NativeVideoBackend = 'media3' | 'libvlc' | 'gstreamer' | 'mpv'
 
 export interface NativeBufferOptions {
   /** Optional backend-specific minimum reserve override. Omit to use the player's default. */
@@ -930,8 +930,8 @@ function nativePlatform(): 'android' | 'windows' | 'linux' {
   return 'linux'
 }
 
-function nativeBackend(options: NativeAttachVideoOptions): NativeVideoBackend {
-  return options.nativeBackend ?? 'auto'
+function nativeBackend(options: NativeAttachVideoOptions): NativeVideoBackend | undefined {
+  return options.nativeBackend
 }
 
 function secondsToMilliseconds(value?: number): number | undefined {

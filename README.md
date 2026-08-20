@@ -64,17 +64,17 @@ const video = createTauriVideoClient()
 
 const player = await video.attach(document.querySelector('video')!, {
   source: movieUrl,
-  backend: ['mediabunny', 'tauri'],
+  backend: 'tauri',
   backendOptions: {
-    tauri: { engine: 'auto' },
+    tauri: { engine: 'gstreamer' },
   },
 })
 
 await player.play()
 ```
 
-The ordered list tries direct DOM/WebCodecs playback, then native playback,
-without changing the controller API. Use `backend: 'tauri'` to force native.
+Omit `engine` to use the platform default: Media3 on Android and GStreamer on
+desktop builds that include it.
 
 ## Core integrations
 

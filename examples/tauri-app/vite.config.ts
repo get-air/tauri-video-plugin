@@ -10,7 +10,7 @@ export default defineConfig({
   resolve: {
     // The adapter is file-linked in this repository's example. Resolve its
     // core dependency exactly as a published, flattened npm install would.
-    dedupe: ['@get-air/video', 'effect', 'mediabunny', 'react', 'react-dom'],
+    dedupe: ['@get-air/video', 'effect', 'react', 'react-dom'],
   },
   clearScreen: false,
   server: {

@@ -32,7 +32,7 @@ describe('tauriVideoBackend', () => {
     const tauriGlobal = { __TAURI_INTERNALS__: {} } as unknown as typeof globalThis
 
     expect(adapter.id).toBe('tauri')
-    expect(adapter.autoPriority).toBe(250)
+    expect(adapter.id).toBe('tauri')
     expect(await adapter.isAvailable({ userAgent: 'Windows', global: tauriGlobal })).toBe(true)
     expect(await adapter.isAvailable({ userAgent: 'Macintosh', global: tauriGlobal })).toBe(false)
     expect(await adapter.isAvailable({

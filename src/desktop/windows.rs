@@ -12,12 +12,12 @@ pub fn open<R: Runtime>(
     app: &AppHandle<R>,
     payload: NativeOpenRequest,
 ) -> Result<NativePlaybackSnapshot> {
-    match payload.backend.as_deref().unwrap_or("auto") {
-        "auto" | "gstreamer" => gstreamer::open(app, payload),
-        "mpv" => Err(Error::RuntimeUnavailable(
+    match payload.backend.as_deref() {
+        None | Some("gstreamer") => gstreamer::open(app, payload),
+        Some("mpv") => Err(Error::RuntimeUnavailable(
             "the mpv backend is not implemented on Windows; use gstreamer".into(),
         )),
-        backend => Err(Error::InvalidRequest(format!(
+        Some(backend) => Err(Error::InvalidRequest(format!(
             "backend '{backend}' is not available on Windows"
         ))),
     }

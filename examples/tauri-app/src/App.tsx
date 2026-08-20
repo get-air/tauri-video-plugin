@@ -17,6 +17,7 @@ const caFile = params.get('ca') ?? import.meta.env.VITE_VIDEO_CA_FILE
 const tvMode = params.get('tv') === '1' || import.meta.env.VITE_VIDEO_TV === '1'
 const android = /Android/i.test(navigator.userAgent)
 const windows = /Windows/i.test(navigator.userAgent)
+const platformDefault: NativeVideoBackend = android ? 'media3' : 'gstreamer'
 const videoClient = createTauriVideoClient({
   playback: {
     android: {
@@ -27,26 +28,23 @@ const videoClient = createTauriVideoClient({
 })
 const backendOptions: ReadonlyArray<{ value: NativeVideoBackend; label: string }> = android
   ? [
-      { value: 'auto', label: 'Auto' },
       { value: 'media3', label: 'Media3' },
       { value: 'libvlc', label: 'LibVLC' },
     ]
   : windows
     ? [
-        { value: 'auto', label: 'Auto' },
         { value: 'gstreamer', label: 'GStreamer' },
       ]
     : [
-      { value: 'auto', label: 'Auto' },
       { value: 'gstreamer', label: 'GStreamer' },
       { value: 'mpv', label: 'mpv' },
     ]
 const configuredBackend = (
-  params.get('backend') ?? import.meta.env.VITE_VIDEO_BACKEND ?? 'auto'
+  params.get('backend') ?? import.meta.env.VITE_VIDEO_BACKEND ?? platformDefault
 ) as NativeVideoBackend
 const initialBackend = backendOptions.some(({ value }) => value === configuredBackend)
   ? configuredBackend
-  : 'auto'
+  : platformDefault
 const defaultUri = configuredSource ?? DEFAULT_SOURCE.uri
 
 declare global {
@@ -129,7 +127,7 @@ export default function App() {
     setReloadKey((value) => value + 1)
 
     const url = new URL(window.location.href)
-    if (nextBackend === 'auto') url.searchParams.delete('backend')
+    if (nextBackend === platformDefault) url.searchParams.delete('backend')
     else url.searchParams.set('backend', nextBackend)
     window.history.replaceState(null, '', url)
   }
@@ -319,7 +317,6 @@ function formatBackend(active: string | undefined, requested: NativeVideoBackend
   if (value?.includes('gstreamer') || value?.includes('gst')) return 'GStreamer'
   if (value?.includes('libvlc') || value?.includes('vlc')) return 'LibVLC'
   if (value?.includes('media3') || value?.includes('mediacodec')) return 'Media3'
-  if (requested === 'auto') return 'Resolving'
   if (requested === 'gstreamer') return 'GStreamer'
   if (requested === 'libvlc') return 'LibVLC'
   if (requested === 'media3') return 'Media3'

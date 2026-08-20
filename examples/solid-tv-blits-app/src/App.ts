@@ -18,7 +18,7 @@ const VIDEO_RECT: BlitsVideoRect = {
 const VIDEO_SOURCE = import.meta.env.VITE_VIDEO_SOURCE
   || 'https://media.w3.org/2010/05/sintel/trailer.mp4'
 const videoClient = createTauriVideoClient({
-  playback: { engine: 'auto' },
+  playback: { engine: 'gstreamer' },
 })
 const backgroundShader = JSON.stringify(blitsVideoHole(VIDEO_RECT, 26))
   .replaceAll('"', "'")

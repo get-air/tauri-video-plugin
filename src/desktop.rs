@@ -283,20 +283,20 @@ mod linux {
     }
 
     fn select_backend(requested: Option<&str>) -> Result<Backend> {
-        match requested.unwrap_or("auto") {
-            "auto" if cfg!(feature = "gstreamer-runtime") => Ok(Backend::Gstreamer),
-            "gstreamer" if cfg!(feature = "gstreamer-runtime") => Ok(Backend::Gstreamer),
-            "mpv" if cfg!(feature = "mpv-runtime") => Ok(Backend::Mpv),
-            "gstreamer" => Err(Error::RuntimeUnavailable(
+        match requested {
+            None if cfg!(feature = "gstreamer-runtime") => Ok(Backend::Gstreamer),
+            Some("gstreamer") if cfg!(feature = "gstreamer-runtime") => Ok(Backend::Gstreamer),
+            Some("mpv") if cfg!(feature = "mpv-runtime") => Ok(Backend::Mpv),
+            Some("gstreamer") => Err(Error::RuntimeUnavailable(
                 "the gstreamer backend was not compiled; enable gstreamer-runtime".into(),
             )),
-            "mpv" => Err(Error::RuntimeUnavailable(
+            Some("mpv") => Err(Error::RuntimeUnavailable(
                 "the mpv backend was not compiled; enable mpv-runtime".into(),
             )),
-            "auto" => Err(Error::RuntimeUnavailable(
+            None => Err(Error::RuntimeUnavailable(
                 "the default gstreamer backend was not compiled; request 'mpv' explicitly or enable gstreamer-runtime".into(),
             )),
-            backend => Err(Error::InvalidRequest(format!(
+            Some(backend) => Err(Error::InvalidRequest(format!(
                 "backend '{backend}' is not available on Linux"
             ))),
         }
@@ -313,8 +313,8 @@ mod linux {
 
         #[cfg(feature = "gstreamer-runtime")]
         #[test]
-        fn auto_selects_gstreamer() {
-            assert_eq!(select_backend(Some("auto")).unwrap(), Backend::Gstreamer);
+        fn omitted_backend_selects_gstreamer() {
+            assert_eq!(select_backend(None).unwrap(), Backend::Gstreamer);
         }
 
         #[cfg(feature = "mpv-runtime")]
@@ -322,7 +322,7 @@ mod linux {
         fn mpv_requires_an_explicit_request() {
             assert_eq!(select_backend(Some("mpv")).unwrap(), Backend::Mpv);
             #[cfg(not(feature = "gstreamer-runtime"))]
-            assert!(select_backend(Some("auto")).is_err());
+            assert!(select_backend(None).is_err());
         }
     }
 }
