@@ -1,0 +1,17 @@
+{
+  "app": {
+    "windows": [
+      {
+        "fullscreen": false,
+        "height": 820,
+        "decorations": true,
+        "resizable": true,
+        "transparent": true,
+        "title": "Tauri Video",
+        "width": 1180,
+        "minWidth": 600,
+        "minHeight": 680
+      }
+    ]
+  }
+}

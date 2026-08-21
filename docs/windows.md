@@ -1,18 +1,24 @@
 # Windows runtime
 
 Windows playback uses GStreamer with `d3d11videosink`. The sink renders into a
-plugin-owned child `HWND`; decoded frames never pass through JavaScript, canvas,
-or a localhost bridge. WebView2 does not alpha-compose transparent pixels with
-a lower sibling child window, so the video child is kept above WebView2 instead.
-Its Win32 window region is clipped to the visible `<video>` aperture and has the
-same rounded and overflow-clipped geometry as the DOM anchor. The region is
-applied to both the plugin host and GStreamer's dynamically created `GSTD3D11`
-renderer window after the first presented frame.
+plugin-owned, non-activating tool window directly behind the Tauri window;
+decoded frames never pass through JavaScript, canvas, or a localhost bridge.
+The transparent WebView aperture reveals that lower video window while controls,
+tooltips, and arbitrary HTML remain in the Tauri window above it—the same visual
+stacking model used on Linux.
 
-Windows hardware flip surfaces cannot reliably interleave WebView pixels inside
-the same screen rectangle. Interactive HTML controls must therefore be docked
-outside the `<video>` anchor instead of overlaying it. The example reserves a
-responsive 16:9 native stage and a separate 80 px WebView transport dock.
+The Tauri window that hosts video must be created with `transparent: true` on
+Windows. Prefer a `tauri.windows.conf.json` platform override so other desktop
+targets keep their existing window configuration. Platform-specific window
+arrays replace the base array, so repeat the complete window entry and add:
+
+```json
+{
+  "app": {
+    "windows": [{ "transparent": true }]
+  }
+}
+```
 
 ## Development runtime
 
@@ -39,13 +45,13 @@ reject instead of being silently treated as stretch.
 
 ## Native layout
 
-The plugin creates one reusable child window and keeps it above WebView2.
-Layout updates convert CSS logical pixels to Win32 physical pixels, call
-`SetWindowPos`, and atomically replace both the host and renderer window regions.
-Paused layout changes also ask GStreamer to expose its last frame. Closing a
-controller parks the pipeline, removes the window regions, and hides the child
-so a later controller can reuse the native surface. Keep WebView controls outside
-the anchor rectangle so they remain above the native presentation plane.
+The plugin creates one reusable popup tool window and keeps it immediately
+behind the Tauri window without activating it or adding a taskbar entry. Layout
+updates convert CSS logical pixels to Win32 desktop coordinates and call
+`SetWindowPos`; playback polling also keeps the video aligned while the parent
+window moves. Minimize hides the video window. Paused layout changes ask
+GStreamer to expose its last frame, and closing parks and hides the reusable
+surface.
 
 The Windows backend uses the same
 `backendOptions.tauri.windows.buffer` opt-in overrides as Linux. Omit them to

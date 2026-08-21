@@ -5,9 +5,8 @@ Release numbering follows the
 
 ## Unreleased
 
-- Fix Windows audio-only playback by placing the D3D11 surface above WebView2,
-  clipping both the host and GStreamer renderer HWNDs, and docking the example's
-  HTML transport outside the native video rectangle.
+- Fix Windows audio-only playback while preserving over-video HTML controls by
+  presenting D3D11 in a non-activating window behind a transparent Tauri window.
 - Add a Windows native smoke test for decoded frames, seek, pause, resume, and
   overlay geometry.
 

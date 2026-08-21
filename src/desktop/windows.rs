@@ -51,18 +51,18 @@ mod gstreamer {
     use ::windows::{
         core::{w, PCWSTR},
         Win32::{
-            Foundation::HWND,
+            Foundation::{HWND, POINT},
             Graphics::Gdi::{
-                CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ,
-                HRGN, RGN_DIFF, RGN_ERROR,
+                ClientToScreen, CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject,
+                SetWindowRgn, HGDIOBJ, HRGN, RGN_DIFF, RGN_ERROR,
             },
             System::SystemServices::SS_BLACKRECT,
             UI::{
                 HiDpi::GetDpiForWindow,
                 WindowsAndMessaging::{
-                    CreateWindowExW, FindWindowExW, SetWindowPos, ShowWindow, HWND_TOP,
-                    SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_SHOWWINDOW, SW_HIDE, WINDOW_EX_STYLE,
-                    WINDOW_STYLE, WS_CHILD, WS_CLIPCHILDREN,
+                    CreateWindowExW, FindWindowExW, IsIconic, IsWindowVisible, SetWindowPos,
+                    ShowWindow, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WINDOW_STYLE,
+                    WS_CLIPCHILDREN, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
                 },
             },
         },
@@ -165,17 +165,21 @@ mod gstreamer {
             let parent = window
                 .hwnd()
                 .map_err(|error| Error::Pipeline(error.to_string()))?;
+            window
+                .as_ref()
+                .set_background_color(Some(tauri::webview::Color(0, 0, 0, 0)))
+                .map_err(|error| Error::Pipeline(error.to_string()))?;
             let child = unsafe {
                 CreateWindowExW(
-                    WINDOW_EX_STYLE::default(),
+                    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                     w!("STATIC"),
                     w!(""),
-                    WS_CHILD | WS_CLIPCHILDREN | WINDOW_STYLE(SS_BLACKRECT.0),
+                    WS_POPUP | WS_CLIPCHILDREN | WINDOW_STYLE(SS_BLACKRECT.0),
                     0,
                     0,
                     1,
                     1,
-                    Some(parent),
+                    None,
                     None,
                     None,
                     None,
@@ -205,6 +209,14 @@ mod gstreamer {
         overlays: &[NativeRect],
     ) -> Result<()> {
         let surface = surface()?;
+        if unsafe { IsIconic(surface.parent) }.as_bool()
+            || !unsafe { IsWindowVisible(surface.parent) }.as_bool()
+        {
+            unsafe {
+                let _ = ShowWindow(surface.child, SW_HIDE);
+            }
+            return Ok(());
+        }
         let scale = f64::from(unsafe { GetDpiForWindow(surface.parent) }) / 96.0;
         let scale = if scale.is_finite() && scale > 0.0 {
             scale
@@ -215,19 +227,28 @@ mod gstreamer {
         let y = (y * scale).round() as i32;
         let width = (width.max(1.0) * scale).round() as i32;
         let height = (height.max(1.0) * scale).round() as i32;
+        let mut origin = POINT { x, y };
+        unsafe { ClientToScreen(surface.parent, &mut origin) }
+            .ok()
+            .map_err(|error| {
+                Error::Pipeline(format!(
+                    "failed to map video coordinates to the desktop: {error}"
+                ))
+            })?;
         unsafe {
             SetWindowPos(
                 surface.child,
-                Some(HWND_TOP),
-                x,
-                y,
+                Some(surface.parent),
+                origin.x,
+                origin.y,
                 width,
                 height,
-                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
             )
         }
         .map_err(|error| Error::Pipeline(format!("failed to place video HWND: {error}")))?;
-        apply_surface_regions(surface, scale, x, y, aperture, overlays)
+        let _ = (aperture, overlays);
+        Ok(())
     }
 
     fn refresh_surface_region(
@@ -259,18 +280,11 @@ mod gstreamer {
         surface_x: i32,
         surface_y: i32,
         aperture: Option<&NativeRect>,
-        overlays: &[NativeRect],
+        _: &[NativeRect],
     ) -> Result<()> {
-        apply_window_region(
-            surface.child,
-            scale,
-            surface_x,
-            surface_y,
-            aperture,
-            overlays,
-        )?;
+        apply_window_region(surface.child, scale, surface_x, surface_y, aperture, &[])?;
         if let Some(renderer) = renderer_surface(surface) {
-            apply_window_region(renderer, scale, surface_x, surface_y, aperture, overlays)?;
+            apply_window_region(renderer, scale, surface_x, surface_y, aperture, &[])?;
         }
         Ok(())
     }
@@ -710,6 +724,15 @@ mod gstreamer {
 
     fn snapshot(player: &mut NativePlayer) -> Result<NativePlaybackSnapshot> {
         drain_bus(player)?;
+        let surface = player.source.read().clone();
+        place_surface(
+            surface.x,
+            surface.y,
+            surface.width,
+            surface.height,
+            surface.surface_aperture.as_ref(),
+            &surface.surface_overlays,
+        )?;
         let position = player
             .pipeline
             .query_position::<gst::ClockTime>()

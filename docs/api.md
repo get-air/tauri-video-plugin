@@ -249,10 +249,10 @@ implementation.
 The common controller's `<video>` element is the native geometry anchor. This
 adapter tracks its visible CSS rectangle and registered overlays before placing
 the native surface. Linux and Android then commit the matching transparent
-WebView aperture. Windows applies the same geometry to both the video host and
-GStreamer's renderer HWND. Because hardware flip surfaces cannot interleave DOM
-inside their rectangle reliably, dock Windows controls outside the `<video>`
-anchor. Layout changes do not expose native pixels at stale coordinates.
+WebView aperture. Windows positions a separate native video window beneath a
+transparent Tauri window, so the same controls and tooltips remain ordinary DOM
+above decoded pixels. Layout changes do not expose native pixels at stale
+coordinates. Windows hosts must create the Tauri window with `transparent: true`.
 
 Register intentional overlay UI through any common mechanism:
 
