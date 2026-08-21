@@ -1,24 +1,14 @@
 # Windows runtime
 
-Windows playback uses GStreamer with `d3d11videosink`. The sink renders into a
-plugin-owned, non-activating tool window directly behind the Tauri window;
-decoded frames never pass through JavaScript, canvas, or a localhost bridge.
-The transparent WebView aperture reveals that lower video window while controls,
-tooltips, and arbitrary HTML remain in the Tauri window above it—the same visual
-stacking model used on Linux.
+Windows playback uses GStreamer `playbin3` with an `appsink`. Decoded RGBA
+frames cross Tauri's raw binary `Channel` and are uploaded to a WebGL texture
+inside the existing media-controller DOM. There is no native video HWND,
+transparent WebView aperture, popup tool window, base64 serialization, or
+localhost frame bridge.
 
-The Tauri window that hosts video must be created with `transparent: true` on
-Windows. Prefer a `tauri.windows.conf.json` platform override so other desktop
-targets keep their existing window configuration. Platform-specific window
-arrays replace the base array, so repeat the complete window entry and add:
-
-```json
-{
-  "app": {
-    "windows": [{ "transparent": true }]
-  }
-}
-```
+The result is one ordinary opaque Tauri window. Video, controls, tooltips, and
+arbitrary HTML participate in the same WebView composition, so Windows owns
+dragging, live resize, maximize, fullscreen, and Snap Layouts atomically.
 
 ## Development runtime
 
@@ -38,21 +28,21 @@ tauri-plugin-video = { version = "0.3" }
 on Windows. Explicit `'gstreamer'` selects the same engine. mpv is not compiled
 or selected there.
 
-The current D3D11 sink safely supports `fit` and `stretch`, but not the common
-API's crop-to-cover mode or arbitrary zoom. The controller therefore reports
-`videoFit: false` and `videoZoom: false`; unsupported cover and zoom requests
-reject instead of being silently treated as stretch.
+The WebGL presenter supports `fit`, crop-to-cover, `stretch`, and zoom without
+changing the decoded stream.
 
-## Native layout
+## Decode and presentation
 
-The plugin creates one reusable popup tool window and keeps it immediately
-behind the Tauri window without activating it or adding a taskbar entry. Layout
-updates convert CSS logical pixels to Win32 desktop coordinates and call
-`SetWindowPos`. A native subclass follows `WM_WINDOWPOSCHANGED`, DPI, visibility,
-activation, minimize, and restore messages on the Tauri UI thread, keeping both
-windows aligned during live dragging without a polling delay. Paused layout
-changes ask GStreamer to expose its last frame, and closing parks and hides the
-reusable surface.
+The sink negotiates system-memory RGBA for the binary frame boundary. When a
+D3D11 decoder is available, `d3d11download` accepts its `D3D11Memory` output;
+otherwise the same chain accepts normal system-memory output from software
+decoders such as `avdec_h264`, `vp8dec`, or `theoradec`. Runtime telemetry names
+the selected decoder rather than claiming hardware acceleration unconditionally.
+
+The presenter performs one decoded-frame transfer into the WebView and one
+WebGL texture upload. Its appsink queue is bounded to two frames and drops stale
+frames instead of building an unbounded latency queue. `decodedFrameCopies`
+reports the transported-frame count.
 
 The Windows backend uses the same
 `backendOptions.tauri.windows.buffer` opt-in overrides as Linux. Omit them to

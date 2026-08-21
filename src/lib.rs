@@ -80,6 +80,7 @@ impl Builder {
             .invoke_handler(tauri::generate_handler![
                 commands::native_diagnostics,
                 commands::native_open,
+                commands::native_frame_stream,
                 commands::native_control,
                 commands::native_layout,
                 commands::native_stats,

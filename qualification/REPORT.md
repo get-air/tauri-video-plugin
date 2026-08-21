@@ -1,6 +1,6 @@
 # Qualification report
 
-Run date: 2026-08-04
+Run date: 2026-08-21
 
 ## Current result
 
@@ -8,17 +8,22 @@ Android has two explicitly selectable direct native rendering paths: Media3/Medi
 
 No test downloaded a complete file before playback, converted video in JavaScript, or passed decoded frames through canvas. The final regression was emulator-only. No physical device was used after the user requested emulator-only testing.
 
-This remains a developer preview. Windows and physical ARM hardware are not qualified.
+Windows 11 VM qualification now covers the single-window WebGL presenter,
+including a 1920×818 MKV run at its native 23.97 FPS with zero reported drops.
+Physical ARM hardware remains outside this report.
 
 ## Rendering paths actually measured
 
 | Target | Path | Decoded-frame copies across JS/native boundary |
 | --- | --- | --- |
 | Linux | GStreamer `playbin3` → VA-API → `glsinkbin`/`gtkglsink` | 0 |
+| Windows | GStreamer decoder → bounded RGBA appsink → raw Tauri channel → WebGL | 1 per presented frame |
 | Android fast path | Media3 extractor → MediaCodec → `SurfaceView` | 0 |
 | Android explicit LibVLC | LibVLC demux/decode → `VLCVideoLayout`/`SurfaceView` | 0 |
 
-React renders controls and overlays in the transparent WebView above the native video plane. It never receives decoded video frames.
+React renders controls and overlays in the WebView. Linux and Android keep
+decoded frames on native planes; Windows deliberately transports decoded RGBA
+frames so video and HTML share one compositor and one OS window.
 
 ## Emulator profiles
 
@@ -27,7 +32,7 @@ React renders controls and overlays in the transparent WebView above the native 
 | Phone | Android 16 x86_64, 2 cores, 2.5 GiB effective RAM, 1080×1920 | 20/20 HTTPS cases passed |
 | TV | Android 16 TV x86_64, 4 cores, 1.5 GiB RAM, 1920×1080 | 20/20 HTTPS cases passed |
 | Linux | KDE Wayland, GStreamer 1.28.5, VA-API/GL | Existing live UHD demo and integration suite passed |
-| Windows | Not available | Not tested |
+| Windows | Windows 11 x86_64 VM, WebView2 151, GStreamer 1.28, Microsoft Basic Render Driver | MP4/WebM/Ogg playback and 1080p MKV transport passed |
 
 The phone profile was deliberately CPU-constrained. Emulator software decoders and Goldfish codecs do not model production ARM MediaCodec performance, so this validates behavior and boundedness rather than physical-chip codec capability.
 

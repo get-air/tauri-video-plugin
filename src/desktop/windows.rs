@@ -27,6 +27,13 @@ pub fn control(payload: NativeControlRequest) -> Result<NativePlaybackSnapshot> 
     gstreamer::control(payload)
 }
 
+pub fn frame_stream(
+    session_key: String,
+    channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+) -> Result<()> {
+    gstreamer::frame_stream(session_key, channel)
+}
+
 pub fn layout(payload: NativeLayoutRequest) -> Result<()> {
     gstreamer::layout(payload)
 }
@@ -44,86 +51,56 @@ mod gstreamer {
     use std::{
         cell::RefCell,
         collections::BTreeSet,
-        sync::{Arc, OnceLock},
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc, LazyLock, OnceLock,
+        },
         time::Instant,
     };
 
-    use ::windows::{
-        core::{w, PCWSTR},
-        Win32::{
-            Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
-            Graphics::Gdi::{
-                ClientToScreen, CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject,
-                SetWindowRgn, HGDIOBJ, HRGN, RGN_DIFF, RGN_ERROR,
-            },
-            System::SystemServices::SS_BLACKRECT,
-            UI::{
-                HiDpi::GetDpiForWindow,
-                Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
-                WindowsAndMessaging::{
-                    CreateWindowExW, DestroyWindow, FindWindowExW, IsIconic, IsWindowVisible,
-                    SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE,
-                    WINDOW_STYLE, WM_ACTIVATE, WM_DPICHANGED, WM_NCDESTROY, WM_SHOWWINDOW, WM_SIZE,
-                    WM_WINDOWPOSCHANGED, WS_CLIPCHILDREN, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-                    WS_POPUP,
-                },
-            },
-        },
-    };
     use gst::prelude::*;
     use gstreamer as gst;
-    use gstreamer_video::{
-        prelude::{VideoOverlayExt, VideoOverlayExtManual},
-        VideoOverlay,
-    };
+    use gstreamer_app::{AppSink, AppSinkCallbacks};
+    use gstreamer_video::{VideoFrameExt, VideoFrameRef, VideoInfo};
     use parking_lot::RwLock;
-    use tauri::{AppHandle, Manager, Runtime};
+    use tauri::{
+        ipc::{Channel, InvokeResponseBody},
+        AppHandle, Runtime,
+    };
 
     use crate::{
         models::{
             NativeControlRequest, NativeLayoutRequest, NativeOpenRequest, NativePlaybackSnapshot,
-            NativeRect, NativeSessionRequest, NativeTrackInfo, TrackKind,
+            NativeSessionRequest, NativeTrackInfo, TrackKind,
         },
         Error, Result,
     };
 
     static GST_INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
-    const PARENT_WINDOW_SUBCLASS_ID: usize = 0x4156_5041;
+    static FRAME_CHANNEL: LazyLock<RwLock<Option<FrameChannel>>> =
+        LazyLock::new(|| RwLock::new(None));
 
     thread_local! {
         static PLAYER: RefCell<Option<NativePlayer>> = const { RefCell::new(None) };
-        static SURFACE: RefCell<Option<NativeSurface>> = const { RefCell::new(None) };
-        static SURFACE_PLACEMENT: RefCell<Option<SurfacePlacement>> = const { RefCell::new(None) };
     }
 
-    #[derive(Clone, Copy)]
-    struct NativeSurface {
-        parent: HWND,
-        child: HWND,
-    }
-
-    #[derive(Clone, Copy)]
-    struct SurfacePlacement {
-        x: f64,
-        y: f64,
-        width: f64,
-        height: f64,
+    struct FrameChannel {
+        session_key: String,
+        channel: Channel<InvokeResponseBody>,
     }
 
     struct NativePlayer {
         session_key: String,
         pipeline: gst::Element,
         video_sink: gst::Element,
-        overlay: VideoOverlay,
         source: Arc<RwLock<NativeOpenRequest>>,
+        transported_frames: Arc<AtomicU64>,
         buffering_percent: i32,
         buffer_duration_seconds: Option<f64>,
         target_buffer_bytes: Option<u64>,
         desired_playing: bool,
         error: Option<String>,
         last_rendered: u64,
-        region_frame_baseline: u64,
-        region_applied_after_first_frame: bool,
         last_sample_at: Instant,
         measured_fps: f64,
         tracks: Vec<NativeTrackInfo>,
@@ -135,15 +112,7 @@ mod gstreamer {
         payload: NativeOpenRequest,
     ) -> Result<NativePlaybackSnapshot> {
         initialize_gstreamer()?;
-        ensure_surface(app)?;
-        place_surface(
-            payload.x,
-            payload.y,
-            payload.width,
-            payload.height,
-            payload.surface_aperture.as_ref(),
-            &payload.surface_overlays,
-        )?;
+        let _ = app;
 
         PLAYER.with(|slot| {
             let mut slot = slot.borrow_mut();
@@ -166,293 +135,94 @@ mod gstreamer {
             .map_err(Error::RuntimeUnavailable)
     }
 
-    fn ensure_surface<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
-        SURFACE.with(|slot| {
-            if slot.borrow().is_some() {
-                return Ok(());
-            }
-            let window =
-                app.webview_windows().into_values().next().ok_or_else(|| {
-                    Error::Pipeline("no Tauri webview window is available".into())
-                })?;
-            let parent = window
-                .hwnd()
-                .map_err(|error| Error::Pipeline(error.to_string()))?;
-            window
-                .as_ref()
-                .set_background_color(Some(tauri::webview::Color(0, 0, 0, 0)))
-                .map_err(|error| Error::Pipeline(error.to_string()))?;
-            let child = unsafe {
-                CreateWindowExW(
-                    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
-                    w!("STATIC"),
-                    w!(""),
-                    WS_POPUP | WS_CLIPCHILDREN | WINDOW_STYLE(SS_BLACKRECT.0),
-                    0,
-                    0,
-                    1,
-                    1,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-            }
-            .map_err(|error| Error::Pipeline(format!("failed to create video HWND: {error}")))?;
-            if !unsafe {
-                SetWindowSubclass(
-                    parent,
-                    Some(parent_window_subclass_proc),
-                    PARENT_WINDOW_SUBCLASS_ID,
-                    0,
-                )
-            }
-            .as_bool()
-            {
-                unsafe {
-                    let _ = DestroyWindow(child);
-                }
-                return Err(Error::Pipeline(format!(
-                    "failed to synchronize the video window with Tauri: {}",
-                    ::windows::core::Error::from_win32()
-                )));
-            }
-            *slot.borrow_mut() = Some(NativeSurface { parent, child });
-            Ok(())
-        })
-    }
-
-    unsafe extern "system" fn parent_window_subclass_proc(
-        hwnd: HWND,
-        message: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-        _: usize,
-        _: usize,
-    ) -> LRESULT {
-        if message == WM_NCDESTROY {
-            SURFACE.with(|slot| {
-                if let Some(surface) = slot.borrow_mut().take() {
-                    unsafe {
-                        let _ = DestroyWindow(surface.child);
-                    }
-                }
-            });
-            SURFACE_PLACEMENT.with(|slot| *slot.borrow_mut() = None);
-            unsafe {
-                let _ = RemoveWindowSubclass(
-                    hwnd,
-                    Some(parent_window_subclass_proc),
-                    PARENT_WINDOW_SUBCLASS_ID,
-                );
-                return DefSubclassProc(hwnd, message, wparam, lparam);
-            }
-        }
-
-        let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
-        if matches!(
-            message,
-            WM_WINDOWPOSCHANGED | WM_DPICHANGED | WM_SHOWWINDOW | WM_SIZE | WM_ACTIVATE
-        ) {
-            let _ = sync_surface_window();
-        }
-        result
-    }
-
-    fn surface() -> Result<NativeSurface> {
-        SURFACE.with(|slot| {
-            slot.borrow()
-                .as_ref()
-                .copied()
-                .ok_or_else(|| Error::Pipeline("native Windows surface is unavailable".into()))
-        })
-    }
-
-    fn place_surface(
-        x: f64,
-        y: f64,
-        width: f64,
-        height: f64,
-        aperture: Option<&NativeRect>,
-        overlays: &[NativeRect],
-    ) -> Result<()> {
-        SURFACE_PLACEMENT.with(|slot| {
-            *slot.borrow_mut() = Some(SurfacePlacement {
-                x,
-                y,
-                width,
-                height,
-            });
+    pub fn frame_stream(session_key: String, channel: Channel<InvokeResponseBody>) -> Result<()> {
+        *FRAME_CHANNEL.write() = Some(FrameChannel {
+            session_key,
+            channel,
         });
-        let _ = (aperture, overlays);
-        sync_surface_window()
+        Ok(())
     }
 
-    fn sync_surface_window() -> Result<()> {
-        let surface = surface()?;
-        let Some(placement) = SURFACE_PLACEMENT.with(|slot| *slot.borrow()) else {
-            return Ok(());
+    fn transport_frame(sample: &gst::Sample, source: &RwLock<NativeOpenRequest>) -> Result<bool> {
+        let session_key = source.read().session_key.clone();
+        let channel = FRAME_CHANNEL
+            .read()
+            .as_ref()
+            .filter(|stream| stream.session_key == session_key)
+            .map(|stream| stream.channel.clone());
+        let Some(channel) = channel else {
+            return Ok(false);
         };
-        if unsafe { IsIconic(surface.parent) }.as_bool()
-            || !unsafe { IsWindowVisible(surface.parent) }.as_bool()
-        {
-            unsafe {
-                let _ = ShowWindow(surface.child, SW_HIDE);
-            }
-            return Ok(());
+        let caps = sample
+            .caps()
+            .ok_or_else(|| Error::Pipeline("Windows video frame has no caps".into()))?;
+        let info = VideoInfo::from_caps(caps)
+            .map_err(|error| Error::Pipeline(format!("invalid Windows video caps: {error}")))?;
+        let buffer = sample
+            .buffer()
+            .ok_or_else(|| Error::Pipeline("Windows video sample has no buffer".into()))?;
+        let frame = VideoFrameRef::from_buffer_ref_readable(buffer, &info).map_err(|error| {
+            Error::Pipeline(format!("could not map Windows video frame: {error}"))
+        })?;
+        let width = frame.width() as usize;
+        let height = frame.height() as usize;
+        let row_bytes = width.saturating_mul(4);
+        let stride = frame.plane_stride()[0].unsigned_abs() as usize;
+        if width == 0 || height == 0 || stride < row_bytes {
+            return Err(Error::Pipeline(
+                "Windows video frame has invalid dimensions".into(),
+            ));
         }
-        let scale = f64::from(unsafe { GetDpiForWindow(surface.parent) }) / 96.0;
-        let scale = if scale.is_finite() && scale > 0.0 {
-            scale
-        } else {
-            1.0
-        };
-        let x = (placement.x * scale).round() as i32;
-        let y = (placement.y * scale).round() as i32;
-        let width = (placement.width.max(1.0) * scale).round() as i32;
-        let height = (placement.height.max(1.0) * scale).round() as i32;
-        let mut origin = POINT { x, y };
-        unsafe { ClientToScreen(surface.parent, &mut origin) }
-            .ok()
+        let pixels = frame.plane_data(0).map_err(|error| {
+            Error::Pipeline(format!("could not read Windows video pixels: {error}"))
+        })?;
+        let mut message = Vec::with_capacity(8 + row_bytes.saturating_mul(height));
+        message.extend_from_slice(&(width as u32).to_le_bytes());
+        message.extend_from_slice(&(height as u32).to_le_bytes());
+        for row in 0..height {
+            let start = row.saturating_mul(stride);
+            let end = start.saturating_add(row_bytes);
+            let data = pixels
+                .get(start..end)
+                .ok_or_else(|| Error::Pipeline("Windows video frame stride is truncated".into()))?;
+            message.extend_from_slice(data);
+        }
+        channel
+            .send(InvokeResponseBody::Raw(message))
+            .map(|_| true)
             .map_err(|error| {
-                Error::Pipeline(format!(
-                    "failed to map video coordinates to the desktop: {error}"
-                ))
-            })?;
-        unsafe {
-            SetWindowPos(
-                surface.child,
-                Some(surface.parent),
-                origin.x,
-                origin.y,
-                width,
-                height,
-                SWP_NOACTIVATE | SWP_SHOWWINDOW,
-            )
-        }
-        .map_err(|error| Error::Pipeline(format!("failed to place video HWND: {error}")))?;
-        Ok(())
+                Error::Pipeline(format!("could not deliver Windows video frame: {error}"))
+            })
     }
 
-    fn refresh_surface_region(
-        x: f64,
-        y: f64,
-        aperture: Option<&NativeRect>,
-        overlays: &[NativeRect],
-    ) -> Result<()> {
-        let surface = surface()?;
-        let scale = f64::from(unsafe { GetDpiForWindow(surface.parent) }) / 96.0;
-        let scale = if scale.is_finite() && scale > 0.0 {
-            scale
-        } else {
-            1.0
+    fn build_webview_sink(app_sink: &AppSink) -> Result<(gst::Element, gst::Element)> {
+        let app_sink_element = app_sink.clone().upcast::<gst::Element>();
+        let Ok(download) = gst::ElementFactory::make("d3d11download").build() else {
+            return Ok((app_sink_element.clone(), app_sink_element));
         };
-        apply_surface_regions(
-            surface,
-            scale,
-            (x * scale).round() as i32,
-            (y * scale).round() as i32,
-            aperture,
-            overlays,
-        )
-    }
-
-    fn apply_surface_regions(
-        surface: NativeSurface,
-        scale: f64,
-        surface_x: i32,
-        surface_y: i32,
-        aperture: Option<&NativeRect>,
-        _: &[NativeRect],
-    ) -> Result<()> {
-        apply_window_region(surface.child, scale, surface_x, surface_y, aperture, &[])?;
-        if let Some(renderer) = renderer_surface(surface) {
-            apply_window_region(renderer, scale, surface_x, surface_y, aperture, &[])?;
-        }
-        Ok(())
-    }
-
-    fn renderer_surface(surface: NativeSurface) -> Option<HWND> {
-        unsafe { FindWindowExW(Some(surface.child), None, w!("GSTD3D11"), PCWSTR::null()) }.ok()
-    }
-
-    fn apply_window_region(
-        window: HWND,
-        scale: f64,
-        surface_x: i32,
-        surface_y: i32,
-        aperture: Option<&NativeRect>,
-        overlays: &[NativeRect],
-    ) -> Result<()> {
-        let Some(aperture) = aperture else {
-            unsafe {
-                SetWindowRgn(window, None, true);
-            }
-            return Ok(());
-        };
-        let surface_region = rect_region(aperture, scale, surface_x, surface_y);
-        if surface_region.0.is_null() {
-            return Err(Error::Pipeline(
-                "failed to allocate the native video window region".into(),
-            ));
-        }
-        for overlay in overlays {
-            let overlay_region = rect_region(overlay, scale, surface_x, surface_y);
-            let combined = unsafe {
-                CombineRgn(
-                    Some(surface_region),
-                    Some(surface_region),
-                    Some(overlay_region),
-                    RGN_DIFF,
-                )
-            };
-            unsafe {
-                let _ = DeleteObject(HGDIOBJ(overlay_region.0));
-            }
-            if combined == RGN_ERROR {
-                unsafe {
-                    let _ = DeleteObject(HGDIOBJ(surface_region.0));
-                }
-                return Err(Error::Pipeline(
-                    "failed to cut an HTML overlay from the native video surface".into(),
-                ));
-            }
-        }
-        if unsafe { SetWindowRgn(window, Some(surface_region), true) } == 0 {
-            unsafe {
-                let _ = DeleteObject(HGDIOBJ(surface_region.0));
-            }
-            return Err(Error::Pipeline(
-                "failed to apply the native video window region".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn rect_region(rect: &NativeRect, scale: f64, surface_x: i32, surface_y: i32) -> HRGN {
-        let left = (rect.left * scale).round() as i32 - surface_x;
-        let top = (rect.top * scale).round() as i32 - surface_y;
-        let right = ((rect.left + rect.width) * scale).round() as i32 - surface_x;
-        let bottom = ((rect.top + rect.height) * scale).round() as i32 - surface_y;
-        let radius_x = (rect.radius_x.max(0.0) * scale * 2.0).round() as i32;
-        let radius_y = (rect.radius_y.max(0.0) * scale * 2.0).round() as i32;
-        if radius_x > 0 && radius_y > 0 {
-            unsafe { CreateRoundRectRgn(left, top, right + 1, bottom + 1, radius_x, radius_y) }
-        } else {
-            unsafe { CreateRectRgn(left, top, right, bottom) }
-        }
-    }
-
-    fn hide_surface() {
-        if let Ok(surface) = surface() {
-            unsafe {
-                let _ = ShowWindow(surface.child, SW_HIDE);
-                SetWindowRgn(surface.child, None, true);
-                if let Some(renderer) = renderer_surface(surface) {
-                    SetWindowRgn(renderer, None, true);
-                }
-            }
-        }
+        let convert = gst::ElementFactory::make("videoconvert")
+            .build()
+            .map_err(|error| Error::Pipeline(format!("videoconvert is unavailable: {error}")))?;
+        let sink_bin = gst::Bin::new();
+        sink_bin
+            .add_many([&download, &convert, &app_sink_element])
+            .map_err(|error| Error::Pipeline(error.to_string()))?;
+        gst::Element::link_many([&download, &convert, &app_sink_element])
+            .map_err(|error| Error::Pipeline(error.to_string()))?;
+        let sink_pad = download
+            .static_pad("sink")
+            .ok_or_else(|| Error::Pipeline("d3d11download has no sink pad".into()))?;
+        let ghost = gst::GhostPad::builder_with_target(&sink_pad)
+            .map_err(|error| Error::Pipeline(error.to_string()))?
+            .name("sink")
+            .build();
+        ghost
+            .set_active(true)
+            .map_err(|error| Error::Pipeline(error.to_string()))?;
+        sink_bin
+            .add_pad(&ghost)
+            .map_err(|error| Error::Pipeline(error.to_string()))?;
+        Ok((sink_bin.upcast::<gst::Element>(), app_sink_element))
     }
 
     fn configure_source(element: &gst::Element, source: &NativeOpenRequest) {
@@ -502,20 +272,37 @@ mod gstreamer {
 
     fn create_player(payload: &NativeOpenRequest) -> Result<NativePlayer> {
         let source = Arc::new(RwLock::new(payload.clone()));
-        let video_sink = gst::ElementFactory::make("d3d11videosink")
-            .property("force-aspect-ratio", true)
-            .property("sync", true)
-            .property("enable-last-sample", false)
-            .build()
-            .map_err(|error| Error::Pipeline(format!("d3d11videosink is unavailable: {error}")))?;
-        let overlay = video_sink
-            .clone()
-            .dynamic_cast::<VideoOverlay>()
-            .map_err(|_| Error::Pipeline("d3d11videosink has no VideoOverlay interface".into()))?;
-        let native_surface = surface()?;
-        unsafe {
-            overlay.set_window_handle(native_surface.child.0 as usize);
-        }
+        let transported_frames = Arc::new(AtomicU64::new(0));
+        let frame_source = Arc::clone(&source);
+        let frame_counter = Arc::clone(&transported_frames);
+        let caps = gst::Caps::builder("video/x-raw")
+            .field("format", "RGBA")
+            .build();
+        let app_sink = AppSink::builder()
+            .caps(&caps)
+            .sync(true)
+            .max_buffers(2)
+            .drop(true)
+            .enable_last_sample(false)
+            .callbacks(
+                AppSinkCallbacks::builder()
+                    .new_sample(move |sink| {
+                        let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                        match transport_frame(&sample, &frame_source) {
+                            Ok(true) => {
+                                frame_counter.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                tracing::warn!(%error, "failed to transport a Windows video frame");
+                            }
+                        }
+                        Ok(gst::FlowSuccess::Ok)
+                    })
+                    .build(),
+            )
+            .build();
+        let (pipeline_video_sink, video_sink) = build_webview_sink(&app_sink)?;
 
         let buffer_duration_seconds = payload
             .max_buffer_ms
@@ -525,7 +312,7 @@ mod gstreamer {
             .map(|value| value.clamp(4 * 1024 * 1024, i32::MAX as u64));
         let mut pipeline_builder = gst::ElementFactory::make("playbin3")
             .property("uri", &payload.uri)
-            .property("video-sink", &video_sink);
+            .property("video-sink", &pipeline_video_sink);
         if let Some(seconds) = buffer_duration_seconds {
             pipeline_builder =
                 pipeline_builder.property("buffer-duration", (seconds * 1_000_000_000.0) as i64);
@@ -548,16 +335,14 @@ mod gstreamer {
             session_key: String::new(),
             pipeline,
             video_sink,
-            overlay,
             source,
+            transported_frames,
             buffering_percent: 0,
             buffer_duration_seconds,
             target_buffer_bytes,
             desired_playing: payload.autoplay,
             error: None,
             last_rendered: 0,
-            region_frame_baseline: 0,
-            region_applied_after_first_frame: false,
             last_sample_at: Instant::now(),
             measured_fps: 0.0,
             tracks: vec![],
@@ -614,29 +399,13 @@ mod gstreamer {
                 payload.volume.clamp(0.0, 1.0)
             },
         );
-        player.video_sink.set_property("force-aspect-ratio", true);
-        place_surface(
-            payload.x,
-            payload.y,
-            payload.width,
-            payload.height,
-            payload.surface_aperture.as_ref(),
-            &payload.surface_overlays,
-        )?;
-        unsafe {
-            player
-                .overlay
-                .set_window_handle(surface()?.child.0 as usize);
-        }
-
         player.buffering_percent = 0;
         player.buffer_duration_seconds = buffer_duration_seconds;
         player.target_buffer_bytes = target_buffer_bytes;
         player.desired_playing = payload.autoplay;
         player.error = None;
-        player.last_rendered = rendered_frames(&player.video_sink);
-        player.region_frame_baseline = player.last_rendered;
-        player.region_applied_after_first_frame = false;
+        player.transported_frames.store(0, Ordering::Relaxed);
+        player.last_rendered = 0;
         player.last_sample_at = Instant::now();
         player.measured_fps = 0.0;
         player.tracks.clear();
@@ -651,22 +420,26 @@ mod gstreamer {
             .pipeline
             .set_state(state)
             .map_err(|error| Error::Pipeline(error.to_string()))?;
-        player.overlay.expose();
-        refresh_surface_region(
-            payload.x,
-            payload.y,
-            payload.surface_aperture.as_ref(),
-            &payload.surface_overlays,
-        )?;
         player.session_key.clone_from(&payload.session_key);
         Ok(())
     }
 
-    fn rendered_frames(video_sink: &gst::Element) -> u64 {
-        video_sink
-            .property::<gst::Structure>("stats")
-            .get::<u64>("rendered")
-            .unwrap_or(0)
+    fn active_video_decoder(pipeline: &gst::Element) -> String {
+        let Some(bin) = pipeline.dynamic_cast_ref::<gst::Bin>() else {
+            return "unknown-decoder".into();
+        };
+        bin.iterate_recurse()
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .find(|element| {
+                element.factory().is_some_and(|factory| {
+                    factory
+                        .metadata("klass")
+                        .is_some_and(|klass| klass.contains("Decoder/Video"))
+                })
+            })
+            .map(|element| element.name().to_string())
+            .unwrap_or_else(|| "unknown-decoder".into())
     }
 
     pub fn control(payload: NativeControlRequest) -> Result<NativePlaybackSnapshot> {
@@ -679,8 +452,6 @@ mod gstreamer {
             match payload.action.as_str() {
                 "play" => {
                     player.desired_playing = true;
-                    player.region_frame_baseline = rendered_frames(&player.video_sink);
-                    player.region_applied_after_first_frame = false;
                     player
                         .pipeline
                         .set_state(gst::State::Playing)
@@ -705,9 +476,7 @@ mod gstreamer {
                 "volume" => player
                     .pipeline
                     .set_property("volume", payload.value.clamp(0.0, 1.0)),
-                "fit" => player.video_sink.set_property("force-aspect-ratio", true),
-                "crop" => player.video_sink.set_property("force-aspect-ratio", false),
-                "stretch" => player.video_sink.set_property("force-aspect-ratio", false),
+                "fit" | "crop" | "stretch" | "zoom" => {}
                 "track" => select_stream(player, payload.index, true)?,
                 "deselectTrack" => select_stream(player, payload.index, false)?,
                 action => {
@@ -727,21 +496,6 @@ mod gstreamer {
                 .as_mut()
                 .ok_or_else(|| Error::InvalidRequest("native player is not open".into()))?;
             ensure_session(&player.session_key, &payload.session_key)?;
-            place_surface(
-                payload.x,
-                payload.y,
-                payload.width,
-                payload.height,
-                payload.surface_aperture.as_ref(),
-                &payload.surface_overlays,
-            )?;
-            player.overlay.expose();
-            refresh_surface_region(
-                payload.x,
-                payload.y,
-                payload.surface_aperture.as_ref(),
-                &payload.surface_overlays,
-            )?;
             let mut source = player.source.write();
             source.x = payload.x;
             source.y = payload.y;
@@ -773,6 +527,13 @@ mod gstreamer {
         if owns_player {
             park_player()?;
         }
+        let owns_stream = FRAME_CHANNEL
+            .read()
+            .as_ref()
+            .is_some_and(|stream| stream.session_key == payload.session_key);
+        if owns_stream {
+            FRAME_CHANNEL.write().take();
+        }
         Ok(())
     }
 
@@ -786,7 +547,6 @@ mod gstreamer {
                 .pipeline
                 .set_state(gst::State::Ready)
                 .map_err(|error| Error::Pipeline(error.to_string()))?;
-            hide_surface();
             player.session_key.clear();
             player.tracks.clear();
             player.selected_streams.clear();
@@ -818,18 +578,8 @@ mod gstreamer {
             .map(|time| time.seconds_f64())
             .unwrap_or(0.0);
         let structure = player.video_sink.property::<gst::Structure>("stats");
-        let rendered = structure.get::<u64>("rendered").unwrap_or(0);
+        let rendered = player.transported_frames.load(Ordering::Relaxed);
         let dropped = structure.get::<u64>("dropped").unwrap_or(0);
-        if !player.region_applied_after_first_frame && rendered > player.region_frame_baseline {
-            let source = player.source.read().clone();
-            refresh_surface_region(
-                source.x,
-                source.y,
-                source.surface_aperture.as_ref(),
-                &source.surface_overlays,
-            )?;
-            player.region_applied_after_first_frame = true;
-        }
         let now = Instant::now();
         let elapsed = now.duration_since(player.last_sample_at).as_secs_f64();
         if elapsed >= 0.5 {
@@ -864,7 +614,10 @@ mod gstreamer {
             presented_frames: rendered,
             dropped_frames: dropped,
             measured_fps: player.measured_fps,
-            hardware_backend: "gstreamer-d3d11-win32".into(),
+            hardware_backend: format!(
+                "gstreamer:{}:webview-rgba-win32",
+                active_video_decoder(&player.pipeline)
+            ),
             encoded_bytes_buffered: player.target_buffer_bytes.map_or(0, |target| {
                 target.saturating_mul(player.buffering_percent.max(0) as u64) / 100
             }),
@@ -1027,6 +780,13 @@ mod gstreamer {
     }
 
     pub fn control(_: NativeControlRequest) -> Result<NativePlaybackSnapshot> {
+        unavailable()
+    }
+
+    pub fn frame_stream(
+        _: String,
+        _: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+    ) -> Result<()> {
         unavailable()
     }
 

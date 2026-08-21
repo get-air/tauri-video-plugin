@@ -12,7 +12,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }))
 
-vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: mocks.invoke,
+  Channel: class MockChannel<T> {
+    onmessage: (message: T) => void = () => undefined
+  },
+}))
 
 import {
   attachTauriBackend,
@@ -77,6 +82,43 @@ async function attach(
 beforeEach(() => {
   clearVerifiedTauriVideoProtocolForTesting()
   vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows NT 10.0')
+  const gl = {
+    ARRAY_BUFFER: 0x8892,
+    STATIC_DRAW: 0x88E4,
+    FLOAT: 0x1406,
+    TEXTURE_2D: 0x0DE1,
+    TEXTURE_WRAP_S: 0x2802,
+    TEXTURE_WRAP_T: 0x2803,
+    CLAMP_TO_EDGE: 0x812F,
+    TEXTURE_MIN_FILTER: 0x2801,
+    TEXTURE_MAG_FILTER: 0x2800,
+    LINEAR: 0x2601,
+    VERTEX_SHADER: 0x8B31,
+    FRAGMENT_SHADER: 0x8B30,
+    COMPILE_STATUS: 0x8B81,
+    LINK_STATUS: 0x8B82,
+    createShader: vi.fn(() => ({})),
+    shaderSource: vi.fn(),
+    compileShader: vi.fn(),
+    getShaderParameter: vi.fn(() => true),
+    getShaderInfoLog: vi.fn(() => ''),
+    createProgram: vi.fn(() => ({})),
+    attachShader: vi.fn(),
+    linkProgram: vi.fn(),
+    getProgramParameter: vi.fn(() => true),
+    getProgramInfoLog: vi.fn(() => ''),
+    useProgram: vi.fn(),
+    createBuffer: vi.fn(() => ({})),
+    bindBuffer: vi.fn(),
+    bufferData: vi.fn(),
+    getAttribLocation: vi.fn(() => 0),
+    enableVertexAttribArray: vi.fn(),
+    vertexAttribPointer: vi.fn(),
+    createTexture: vi.fn(() => ({})),
+    bindTexture: vi.fn(),
+    texParameteri: vi.fn(),
+  } as unknown as WebGLRenderingContext
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(gl)
   snapshot = {
     durationSeconds: 120,
     currentTimeSeconds: 0,
@@ -149,7 +191,13 @@ describe('native controller contract', () => {
     await attach()
 
     expect(mocks.invoke.mock.calls.map(([command]) => commandName(command)))
-      .toEqual(['native_diagnostics', 'native_open', 'native_open'])
+      .toEqual([
+        'native_diagnostics',
+        'native_frame_stream',
+        'native_open',
+        'native_frame_stream',
+        'native_open',
+      ])
     const open = mocks.invoke.mock.calls.find(([command]) => commandName(command) === 'native_open')
     expect((open?.[1] as { payload?: unknown })?.payload).toMatchObject({
       protocolVersion: TAURI_VIDEO_PROTOCOL_VERSION,
@@ -187,17 +235,14 @@ describe('native controller contract', () => {
     const controller = await attachTauriBackend(element, {
       source: 'movie.mkv',
       suspendWhenHidden: false,
+      surfaceMode: 'transparent-canvas',
       controlRegions: [controls],
     })
     controllers.add(controller)
 
     const open = mocks.invoke.mock.calls.find(([command]) => commandName(command) === 'native_open')
-    expect((open?.[1] as { payload?: unknown })?.payload).toMatchObject({
-      surfaceAperture: { left: 40, top: 60, width: 640, height: 360 },
-      surfaceOverlays: [
-        { left: 40, top: 360, width: 640, height: 60 },
-      ],
-    })
+    expect((open?.[1] as { payload?: Record<string, unknown> })?.payload)
+      .not.toHaveProperty('surfaceAperture')
   })
 
   it('rejects a different native protocol before opening a player', async () => {
@@ -348,22 +393,16 @@ describe('native controller contract', () => {
     expect(remove).toHaveBeenCalledWith('abort', abortHandler)
   })
 
-  it('keeps GStreamer geometry capabilities truthful while preserving stretch', async () => {
+  it('exposes complete Windows canvas geometry controls', async () => {
     const controller = await attach()
-    expect(controller.capabilities).toMatchObject({ videoFit: false, videoZoom: false })
+    expect(controller.capabilities).toMatchObject({ videoFit: true, videoZoom: true })
     mocks.invoke.mockClear()
 
     await controller.setVideoFit('stretch')
-    await expect(controller.setVideoFit('cover')).rejects.toMatchObject({
-      _tag: 'VideoFeatureUnavailableError',
-      feature: 'videoFit',
-    })
-    await expect(controller.setVideoZoom(1.25)).rejects.toMatchObject({
-      _tag: 'VideoFeatureUnavailableError',
-      feature: 'videoZoom',
-    })
+    await controller.setVideoFit('cover')
+    await controller.setVideoZoom(1.25)
 
-    expect(nativeActions()).toEqual(['stretch'])
+    expect(nativeActions()).toEqual(['stretch', 'crop', 'zoom'])
   })
 
   it('preserves complete fit and zoom support for Linux mpv', async () => {

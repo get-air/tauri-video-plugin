@@ -5,12 +5,14 @@ Release numbering follows the
 
 ## Unreleased
 
-- Fix Windows audio-only playback while preserving over-video HTML controls by
-  presenting D3D11 in a non-activating window behind a transparent Tauri window.
-- Synchronize the Windows video window from native move, resize, DPI, visibility,
-  minimize, restore, and activation messages instead of playback polling.
-- Add a Windows native smoke test for decoded frames, seek, pause, resume, and
-  overlay geometry.
+- Replace the Windows two-window D3D11 surface with a single-window GStreamer
+  appsink → raw Tauri channel → WebGL renderer, preserving HTML controls and
+  tooltips during live resize and Snap Layouts.
+- Support Windows fit, crop-to-cover, stretch, and zoom in the WebGL presenter.
+- Report the selected Windows GStreamer decoder and decoded-frame transport
+  count, with D3D11-memory download and software-decoder fallback paths.
+- Add Windows pixel checks for playback, seek, pause/resume, zoomed overlays,
+  tooltips, resize, fullscreen, and Snap Layouts.
 
 ## 0.3.0
 

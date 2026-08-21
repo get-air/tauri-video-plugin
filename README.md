@@ -23,12 +23,16 @@ the Tauri backend installed. The DOM still owns layout, controls, and overlays.
 | macOS | Not supported | — | — |
 | iOS | Not supported | — | — |
 
-Native frames never cross JavaScript or the WebView. Containers, codecs, DRM,
-HDR, and UHD limits depend on the selected engine and target hardware.
+Linux and Android present directly into native surfaces. Windows sends decoded
+RGBA frames over Tauri's binary channel and uploads them to a WebGL texture so
+video, controls, tooltips, resize, and Snap Layouts share one OS window.
+Containers, codecs, DRM, HDR, and UHD limits depend on the selected engine and
+target hardware.
 
 All engines provide playback, seeking, volume, tracks, custom headers, and
-telemetry. Crop-to-cover and zoom require Android or Linux mpv; playback-rate
-changes and frame-accurate seeking are not currently supported.
+telemetry. Crop-to-cover and zoom are supported on Android, Windows, and Linux
+mpv; playback-rate changes and frame-accurate seeking are not currently
+supported.
 
 ## Install
 

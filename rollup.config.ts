@@ -35,6 +35,7 @@ const config: RollupOptions = {
         'guest-js/protocol-error.ts',
         'guest-js/native-surface-layout.ts',
         'guest-js/native-surface-compositor.ts',
+        'guest-js/windows-frame-renderer.ts',
       ],
       exclude: ['**/*.test.ts'],
     }),

@@ -1,4 +1,8 @@
-use tauri::{command, AppHandle, Runtime};
+use tauri::{
+    command,
+    ipc::{Channel, InvokeResponseBody},
+    AppHandle, Runtime,
+};
 
 use crate::{models::*, Error, Result, VideoExt};
 
@@ -20,6 +24,28 @@ pub(crate) async fn native_open<R: Runtime>(
     #[cfg(desktop)]
     {
         app.video().desktop().open_native(payload)
+    }
+}
+
+#[command]
+#[allow(non_snake_case)]
+pub(crate) async fn native_frame_stream<R: Runtime>(
+    app: AppHandle<R>,
+    sessionKey: String,
+    onFrame: Channel<InvokeResponseBody>,
+) -> Result<()> {
+    #[cfg(windows)]
+    {
+        app.video()
+            .desktop()
+            .frame_stream_native(sessionKey, onFrame)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, sessionKey, onFrame);
+        Err(Error::InvalidRequest(
+            "binary video frames are only used by the Windows WebView renderer".into(),
+        ))
     }
 }
 

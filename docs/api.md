@@ -246,13 +246,12 @@ implementation.
 
 ## Native layout and controls
 
-The common controller's `<video>` element is the native geometry anchor. This
-adapter tracks its visible CSS rectangle and registered overlays before placing
-the native surface. Linux and Android then commit the matching transparent
-WebView aperture. Windows positions a separate native video window beneath a
-transparent Tauri window, so the same controls and tooltips remain ordinary DOM
-above decoded pixels. Layout changes do not expose native pixels at stale
-coordinates. Windows hosts must create the Tauri window with `transparent: true`.
+The common controller's `<video>` element is the geometry anchor. Linux and
+Android place native surfaces at its visible CSS rectangle and commit matching
+WebView apertures. Windows inserts a WebGL canvas into the media slot and sends
+decoded frames through a raw Tauri channel, so video and overlays are ordinary
+pixels in the same WebView. Windows hosts do not need transparent windows or
+special window configuration.
 
 Register intentional overlay UI through any common mechanism:
 

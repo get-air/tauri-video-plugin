@@ -28,6 +28,7 @@ import {
   TAURI_VIDEO_PROTOCOL_VERSION,
   verifyTauriVideoProtocol,
 } from './protocol'
+import { WindowsFrameRenderer } from './windows-frame-renderer'
 
 export {
   registerVideoControls,
@@ -166,6 +167,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
   #layoutDirty = false
   #scrollTargets: EventTarget[] = []
   #compositor?: NativeSurfaceCompositor
+  #windowsFrameRenderer?: WindowsFrameRenderer
   #stopCompositorObserver?: () => void
   #controlCleanups = new Set<() => void>()
   #lastLayout?: NativeSurfacePosition
@@ -230,6 +232,13 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     this.#claimMediaElement()
     this.#claimCssSurface()
     if (this.#options.controlRegions) this.registerControls(this.#options.controlRegions)
+    if (nativePlatform() === 'windows') {
+      this.#windowsFrameRenderer = new WindowsFrameRenderer(
+        this.element,
+        this.#options.surfaceMode === 'transparent-canvas',
+      )
+      await this.#windowsFrameRenderer.start(this.#sessionKey)
+    }
     this.element.style.visibility = 'hidden'
     const source = typeof this.#options.source === 'string'
       ? { uri: this.#options.source }
@@ -415,7 +424,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
       hardwareBackend: snapshot.hardwareBackend || (/Android/i.test(navigator.userAgent)
         ? 'android-mediaplayer-surface'
         : 'gstreamer-va-gl-gtk'),
-      decodedFrameCopies: 0,
+      decodedFrameCopies: nativePlatform() === 'windows' ? snapshot.presentedFrames ?? 0 : 0,
       droppedFrames: snapshot.droppedFrames ?? 0,
       averageFrameProcessingUs: snapshot.averageFrameProcessingUs,
       videoCodec: snapshot.tracks.find((track) => track.kind === 'video' && track.selected)?.codec,
@@ -458,6 +467,9 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
       })
     }
     this.#acceptSnapshot(await this.#control(mode === 'cover' ? 'crop' : mode))
+    this.#windowsFrameRenderer?.setFit(
+      mode === 'fit' ? 'contain' : mode === 'stretch' ? 'fill' : mode,
+    )
   }
 
   async setVideoZoom(scale: number): Promise<void> {
@@ -469,7 +481,9 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
         message: 'The active GStreamer sink does not expose portable video-surface zoom',
       })
     }
-    this.#acceptSnapshot(await this.#control('zoom', Math.min(2, Math.max(1, scale))))
+    const clamped = Math.min(2, Math.max(1, scale))
+    this.#acceptSnapshot(await this.#control('zoom', clamped))
+    this.#windowsFrameRenderer?.setZoom(clamped)
   }
 
   registerControls(target: VideoControlsTarget): () => void {
@@ -507,6 +521,8 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     window.visualViewport?.removeEventListener('scroll', this.#handleViewportChange)
     window.visualViewport?.removeEventListener('resize', this.#handleViewportChange)
     for (const cleanup of [...this.#controlCleanups]) cleanup()
+    this.#windowsFrameRenderer?.destroy()
+    this.#windowsFrameRenderer = undefined
     await invoke(`${COMMAND}native_close`, {
       payload: { sessionKey: this.#sessionKey },
     }).catch(() => undefined)
@@ -706,6 +722,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     frame: SurfaceCompositorFrame
   } {
     const rect = this.element.getBoundingClientRect()
+    this.#windowsFrameRenderer?.syncLayout()
     // Android SurfaceView layout uses physical pixels; GTK Fixed uses logical
     // coordinates, which match getBoundingClientRect directly.
     const android = /Android/i.test(navigator.userAgent)
@@ -731,7 +748,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     }
     const layout: NativeSurfacePosition = {
       ...surface,
-      ...(nativePlatform() === 'windows' ? {
+      ...(nativePlatform() === 'windows' && this.#compositor ? {
         surfaceAperture: {
           left: frame.bounds.left,
           top: frame.bounds.top,
@@ -750,7 +767,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
   }
 
   #claimCssSurface(): void {
-    if (this.#options.surfaceMode === 'transparent-canvas') return
+    if (nativePlatform() === 'windows' || this.#options.surfaceMode === 'transparent-canvas') return
     this.#compositor = new NativeSurfaceCompositor(this.#sessionKey, this.element)
   }
 
@@ -795,7 +812,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
   }
 
   #supportsCompleteVideoGeometry(): boolean {
-    if (/Android/i.test(navigator.userAgent)) return true
+    if (/Android|Windows/i.test(navigator.userAgent)) return true
     if (!/Linux/i.test(navigator.userAgent)) return false
     return this.#options.nativeBackend === 'mpv'
       || /\bmpv\b/i.test(this.#snapshot?.hardwareBackend ?? '')
