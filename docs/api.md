@@ -247,9 +247,11 @@ implementation.
 ## Native layout and controls
 
 The common controller's `<video>` element is the native geometry anchor. This
-adapter tracks its visible CSS rectangle, places the native surface first, then
-commits the matching WebView aperture. Layout changes do not expose an empty
-hole while the native surface is still at old coordinates.
+adapter tracks its visible CSS rectangle and registered overlays before placing
+the native surface. Linux and Android then commit the matching transparent
+WebView aperture. Windows applies the same geometry as a region on the video
+`HWND`, with HTML control rectangles removed so they remain visible and
+interactive. Layout changes do not expose native pixels at stale coordinates.
 
 Register intentional overlay UI through any common mechanism:
 

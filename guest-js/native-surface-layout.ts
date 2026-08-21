@@ -8,6 +8,17 @@ export interface NativeSurfaceLayout {
 export interface NativeSurfacePosition extends NativeSurfaceLayout {
   scrollX: number
   scrollY: number
+  surfaceAperture?: NativeSurfaceRect
+  surfaceOverlays?: readonly NativeSurfaceRect[]
+}
+
+export interface NativeSurfaceRect {
+  left: number
+  top: number
+  width: number
+  height: number
+  radiusX?: number
+  radiusY?: number
 }
 
 export interface RectLike {
@@ -70,6 +81,21 @@ export function sameNativeSurfacePosition(
     && Math.abs(leftY - rightY) < 0.5
     && Math.abs(left.width - right.width) < 0.5
     && Math.abs(left.height - right.height) < 0.5
+    && sameOptionalRect(left.surfaceAperture, right.surfaceAperture)
+    && (left.surfaceOverlays?.length ?? 0) === (right.surfaceOverlays?.length ?? 0)
+    && (left.surfaceOverlays ?? []).every((rect, index) => (
+      sameOptionalRect(rect, right.surfaceOverlays?.[index])
+    ))
+}
+
+function sameOptionalRect(left: NativeSurfaceRect | undefined, right: NativeSurfaceRect | undefined): boolean {
+  if (!left || !right) return left === right
+  return Math.abs(left.left - right.left) < 0.5
+    && Math.abs(left.top - right.top) < 0.5
+    && Math.abs(left.width - right.width) < 0.5
+    && Math.abs(left.height - right.height) < 0.5
+    && Math.abs((left.radiusX ?? 0) - (right.radiusX ?? 0)) < 0.5
+    && Math.abs((left.radiusY ?? 0) - (right.radiusY ?? 0)) < 0.5
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

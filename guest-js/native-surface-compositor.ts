@@ -34,6 +34,7 @@ export interface SurfaceCompositorFrame {
   radii: CornerRadii
   ancestors: readonly AncestorFrame[]
   occluders: readonly OccluderFrame[]
+  overlays: readonly Rect[]
 }
 
 interface AncestorFrame {
@@ -173,6 +174,7 @@ export class NativeSurfaceCompositor {
       radii,
       ancestors: [],
       occluders: [],
+      overlays: [],
     }
     const ancestors = state.drilled.map(({ element }) => ({
       element,
@@ -182,6 +184,10 @@ export class NativeSurfaceCompositor {
       element,
       rect: rectFrom(element.getBoundingClientRect()),
     }))
+    const overlays = Array.from(
+      document.querySelectorAll<HTMLElement>(`[${VIDEO_CONTROLS_ATTRIBUTE}]`),
+      (element) => rectFrom(element.getBoundingClientRect()),
+    ).filter(({ width, height }) => width > 0 && height > 0)
     for (let index = 0; index < ancestors.length; index += 1) {
       const ancestor = state.drilled[index]
       const clip = ancestorClip(ancestors[index].rect, ancestor)
@@ -203,6 +209,7 @@ export class NativeSurfaceCompositor {
       radii,
       ancestors,
       occluders,
+      overlays,
     }
   }
 

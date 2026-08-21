@@ -52,12 +52,17 @@ mod gstreamer {
         core::w,
         Win32::{
             Foundation::HWND,
+            Graphics::Gdi::{
+                CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ,
+                HRGN, RGN_DIFF, RGN_ERROR,
+            },
+            System::SystemServices::SS_BLACKRECT,
             UI::{
                 HiDpi::GetDpiForWindow,
                 WindowsAndMessaging::{
-                    CreateWindowExW, SetWindowPos, ShowWindow, HWND_BOTTOM, SWP_NOACTIVATE,
-                    SWP_NOOWNERZORDER, SWP_SHOWWINDOW, SW_HIDE, WINDOW_EX_STYLE, WS_CHILD,
-                    WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+                    CreateWindowExW, SetWindowPos, ShowWindow, HWND_TOP, SWP_NOACTIVATE,
+                    SWP_NOOWNERZORDER, SWP_SHOWWINDOW, SW_HIDE, WINDOW_EX_STYLE, WINDOW_STYLE,
+                    WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
                 },
             },
         },
@@ -74,7 +79,7 @@ mod gstreamer {
     use crate::{
         models::{
             NativeControlRequest, NativeLayoutRequest, NativeOpenRequest, NativePlaybackSnapshot,
-            NativeSessionRequest, NativeTrackInfo, TrackKind,
+            NativeRect, NativeSessionRequest, NativeTrackInfo, TrackKind,
         },
         Error, Result,
     };
@@ -116,7 +121,14 @@ mod gstreamer {
     ) -> Result<NativePlaybackSnapshot> {
         initialize_gstreamer()?;
         ensure_surface(app)?;
-        place_surface(payload.x, payload.y, payload.width, payload.height)?;
+        place_surface(
+            payload.x,
+            payload.y,
+            payload.width,
+            payload.height,
+            payload.surface_aperture.as_ref(),
+            &payload.surface_overlays,
+        )?;
 
         PLAYER.with(|slot| {
             let mut slot = slot.borrow_mut();
@@ -148,10 +160,6 @@ mod gstreamer {
                 app.webview_windows().into_values().next().ok_or_else(|| {
                     Error::Pipeline("no Tauri webview window is available".into())
                 })?;
-            window
-                .as_ref()
-                .set_background_color(Some(tauri::webview::Color(0, 0, 0, 0)))
-                .map_err(|error| Error::Pipeline(error.to_string()))?;
             let parent = window
                 .hwnd()
                 .map_err(|error| Error::Pipeline(error.to_string()))?;
@@ -160,7 +168,7 @@ mod gstreamer {
                     WINDOW_EX_STYLE::default(),
                     w!("STATIC"),
                     w!(""),
-                    WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                    WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WINDOW_STYLE(SS_BLACKRECT.0),
                     0,
                     0,
                     1,
@@ -186,7 +194,14 @@ mod gstreamer {
         })
     }
 
-    fn place_surface(x: f64, y: f64, width: f64, height: f64) -> Result<()> {
+    fn place_surface(
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        aperture: Option<&NativeRect>,
+        overlays: &[NativeRect],
+    ) -> Result<()> {
         let surface = surface()?;
         let scale = f64::from(unsafe { GetDpiForWindow(surface.parent) }) / 96.0;
         let scale = if scale.is_finite() && scale > 0.0 {
@@ -201,7 +216,7 @@ mod gstreamer {
         unsafe {
             SetWindowPos(
                 surface.child,
-                Some(HWND_BOTTOM),
+                Some(HWND_TOP),
                 x,
                 y,
                 width,
@@ -209,13 +224,82 @@ mod gstreamer {
                 SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW,
             )
         }
-        .map_err(|error| Error::Pipeline(format!("failed to place video HWND: {error}")))
+        .map_err(|error| Error::Pipeline(format!("failed to place video HWND: {error}")))?;
+        apply_surface_region(surface.child, scale, x, y, aperture, overlays)
+    }
+
+    fn apply_surface_region(
+        surface: HWND,
+        scale: f64,
+        surface_x: i32,
+        surface_y: i32,
+        aperture: Option<&NativeRect>,
+        overlays: &[NativeRect],
+    ) -> Result<()> {
+        let Some(aperture) = aperture else {
+            unsafe {
+                SetWindowRgn(surface, None, true);
+            }
+            return Ok(());
+        };
+        let surface_region = rect_region(aperture, scale, surface_x, surface_y);
+        if surface_region.0.is_null() {
+            return Err(Error::Pipeline(
+                "failed to allocate the native video window region".into(),
+            ));
+        }
+        for overlay in overlays {
+            let overlay_region = rect_region(overlay, scale, surface_x, surface_y);
+            let combined = unsafe {
+                CombineRgn(
+                    Some(surface_region),
+                    Some(surface_region),
+                    Some(overlay_region),
+                    RGN_DIFF,
+                )
+            };
+            unsafe {
+                let _ = DeleteObject(HGDIOBJ(overlay_region.0));
+            }
+            if combined == RGN_ERROR {
+                unsafe {
+                    let _ = DeleteObject(HGDIOBJ(surface_region.0));
+                }
+                return Err(Error::Pipeline(
+                    "failed to cut an HTML overlay from the native video surface".into(),
+                ));
+            }
+        }
+        if unsafe { SetWindowRgn(surface, Some(surface_region), true) } == 0 {
+            unsafe {
+                let _ = DeleteObject(HGDIOBJ(surface_region.0));
+            }
+            return Err(Error::Pipeline(
+                "failed to apply the native video window region".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn rect_region(rect: &NativeRect, scale: f64, surface_x: i32, surface_y: i32) -> HRGN {
+        let left = (rect.left * scale).round() as i32 - surface_x;
+        let top = (rect.top * scale).round() as i32 - surface_y;
+        let right = ((rect.left + rect.width) * scale).round() as i32 - surface_x;
+        let bottom = ((rect.top + rect.height) * scale).round() as i32 - surface_y;
+        let radius_x = (rect.radius_x.max(0.0) * scale * 2.0).round() as i32;
+        let radius_y = (rect.radius_y.max(0.0) * scale * 2.0).round() as i32;
+        if radius_x > 0 && radius_y > 0 {
+            unsafe { CreateRoundRectRgn(left, top, right + 1, bottom + 1, radius_x, radius_y) }
+        } else {
+            unsafe { CreateRectRgn(left, top, right, bottom) }
+        }
     }
 
     fn hide_surface() {
         if let Ok(surface) = surface() {
             unsafe {
                 let _ = ShowWindow(surface.child, SW_HIDE);
+                SetWindowRgn(surface.child, None, true);
             }
         }
     }
@@ -378,7 +462,14 @@ mod gstreamer {
             },
         );
         player.video_sink.set_property("force-aspect-ratio", true);
-        place_surface(payload.x, payload.y, payload.width, payload.height)?;
+        place_surface(
+            payload.x,
+            payload.y,
+            payload.width,
+            payload.height,
+            payload.surface_aperture.as_ref(),
+            &payload.surface_overlays,
+        )?;
         unsafe {
             player
                 .overlay
@@ -472,7 +563,14 @@ mod gstreamer {
                 .as_ref()
                 .ok_or_else(|| Error::InvalidRequest("native player is not open".into()))?;
             ensure_session(&player.session_key, &payload.session_key)?;
-            place_surface(payload.x, payload.y, payload.width, payload.height)?;
+            place_surface(
+                payload.x,
+                payload.y,
+                payload.width,
+                payload.height,
+                payload.surface_aperture.as_ref(),
+                &payload.surface_overlays,
+            )?;
             player.overlay.expose();
             Ok(())
         })

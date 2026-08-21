@@ -710,26 +710,42 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     // coordinates, which match getBoundingClientRect directly.
     const android = /Android/i.test(navigator.userAgent)
     const scale = android ? (window.devicePixelRatio || 1) : 1
-    const layout = {
+    const surface = {
       ...snapNativeSurfaceLayout(rect, android, scale),
       scrollX: android ? Math.round(window.scrollX * scale) : 0,
       scrollY: android ? Math.round(window.scrollY * scale) : 0,
     }
+    const frame = this.#compositor?.measure(surface, scale) ?? {
+      bounds: { left: 0, top: 0, right: 0, bottom: 0 },
+      width: 0,
+      height: 0,
+      radii: [
+        { x: 0, y: 0 },
+        { x: 0, y: 0 },
+        { x: 0, y: 0 },
+        { x: 0, y: 0 },
+      ] as const,
+      ancestors: [],
+      occluders: [],
+      overlays: [],
+    }
+    const layout: NativeSurfacePosition = {
+      ...surface,
+      ...(nativePlatform() === 'windows' ? {
+        surfaceAperture: {
+          left: frame.bounds.left,
+          top: frame.bounds.top,
+          width: Math.max(0, frame.bounds.right - frame.bounds.left),
+          height: Math.max(0, frame.bounds.bottom - frame.bounds.top),
+          radiusX: Math.max(...frame.radii.map(({ x }) => x)),
+          radiusY: Math.max(...frame.radii.map(({ y }) => y)),
+        },
+        surfaceOverlays: frame.overlays,
+      } : undefined),
+    }
     return {
       layout,
-      frame: this.#compositor?.measure(layout, scale) ?? {
-        bounds: { left: 0, top: 0, right: 0, bottom: 0 },
-        width: 0,
-        height: 0,
-        radii: [
-          { x: 0, y: 0 },
-          { x: 0, y: 0 },
-          { x: 0, y: 0 },
-          { x: 0, y: 0 },
-        ],
-        ancestors: [],
-        occluders: [],
-      },
+      frame,
     }
   }
 

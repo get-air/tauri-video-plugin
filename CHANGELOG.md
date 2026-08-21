@@ -3,6 +3,13 @@
 Release numbering follows the
 [versioning and compatibility policy](VERSIONING.md).
 
+## Unreleased
+
+- Fix Windows audio-only playback by placing the D3D11 surface above WebView2
+  and cutting registered HTML controls and overlays out of its Win32 region.
+- Add a Windows native smoke test for decoded frames, seek, pause, resume, and
+  overlay geometry.
+
 ## 0.3.0
 
 - Remove the `auto` native-engine option and automatic engine-priority configuration.

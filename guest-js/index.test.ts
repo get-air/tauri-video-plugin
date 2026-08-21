@@ -157,6 +157,49 @@ describe('native controller contract', () => {
     })
   })
 
+  it('sends the Windows video aperture and HTML overlay rectangles to native code', async () => {
+    const element = document.createElement('video')
+    const controls = document.createElement('div')
+    document.body.append(element, controls)
+    vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({
+      left: 40,
+      top: 60,
+      right: 680,
+      bottom: 420,
+      width: 640,
+      height: 360,
+      x: 40,
+      y: 60,
+      toJSON: () => ({}),
+    })
+    vi.spyOn(controls, 'getBoundingClientRect').mockReturnValue({
+      left: 40,
+      top: 360,
+      right: 680,
+      bottom: 420,
+      width: 640,
+      height: 60,
+      x: 40,
+      y: 360,
+      toJSON: () => ({}),
+    })
+
+    const controller = await attachTauriBackend(element, {
+      source: 'movie.mkv',
+      suspendWhenHidden: false,
+      controlRegions: [controls],
+    })
+    controllers.add(controller)
+
+    const open = mocks.invoke.mock.calls.find(([command]) => commandName(command) === 'native_open')
+    expect((open?.[1] as { payload?: unknown })?.payload).toMatchObject({
+      surfaceAperture: { left: 40, top: 60, width: 640, height: 360 },
+      surfaceOverlays: [
+        { left: 40, top: 360, width: 640, height: 60 },
+      ],
+    })
+  })
+
   it('rejects a different native protocol before opening a player', async () => {
     mocks.invoke.mockImplementation(async (command: unknown) => {
       if (commandName(command) === 'native_diagnostics') {
@@ -381,5 +424,23 @@ describe('native surface geometry', () => {
     const before = { x: 20, y: 600, width: 900, height: 500, scrollX: 0, scrollY: 0 }
     const nestedScroll = { x: 20, y: 180, width: 900, height: 500, scrollX: 0, scrollY: 0 }
     expect(sameNativeSurfacePosition(nestedScroll, before, true)).toBe(false)
+  })
+
+  it('treats Windows overlay movement as a native surface-region change', () => {
+    const before = {
+      x: 20,
+      y: 40,
+      width: 900,
+      height: 500,
+      scrollX: 0,
+      scrollY: 0,
+      surfaceAperture: { left: 20, top: 40, width: 900, height: 500 },
+      surfaceOverlays: [{ left: 20, top: 480, width: 900, height: 60 }],
+    }
+    const after = {
+      ...before,
+      surfaceOverlays: [{ left: 20, top: 460, width: 900, height: 80 }],
+    }
+    expect(sameNativeSurfacePosition(after, before, false)).toBe(false)
   })
 })
