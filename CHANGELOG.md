@@ -7,6 +7,8 @@ Release numbering follows the
 
 - Fix Windows audio-only playback while preserving over-video HTML controls by
   presenting D3D11 in a non-activating window behind a transparent Tauri window.
+- Synchronize the Windows video window from native move, resize, DPI, visibility,
+  minimize, restore, and activation messages instead of playback polling.
 - Add a Windows native smoke test for decoded frames, seek, pause, resume, and
   overlay geometry.
 

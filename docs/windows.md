@@ -48,10 +48,11 @@ reject instead of being silently treated as stretch.
 The plugin creates one reusable popup tool window and keeps it immediately
 behind the Tauri window without activating it or adding a taskbar entry. Layout
 updates convert CSS logical pixels to Win32 desktop coordinates and call
-`SetWindowPos`; playback polling also keeps the video aligned while the parent
-window moves. Minimize hides the video window. Paused layout changes ask
-GStreamer to expose its last frame, and closing parks and hides the reusable
-surface.
+`SetWindowPos`. A native subclass follows `WM_WINDOWPOSCHANGED`, DPI, visibility,
+activation, minimize, and restore messages on the Tauri UI thread, keeping both
+windows aligned during live dragging without a polling delay. Paused layout
+changes ask GStreamer to expose its last frame, and closing parks and hides the
+reusable surface.
 
 The Windows backend uses the same
 `backendOptions.tauri.windows.buffer` opt-in overrides as Linux. Omit them to

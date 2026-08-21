@@ -51,7 +51,7 @@ mod gstreamer {
     use ::windows::{
         core::{w, PCWSTR},
         Win32::{
-            Foundation::{HWND, POINT},
+            Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
             Graphics::Gdi::{
                 ClientToScreen, CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject,
                 SetWindowRgn, HGDIOBJ, HRGN, RGN_DIFF, RGN_ERROR,
@@ -59,10 +59,13 @@ mod gstreamer {
             System::SystemServices::SS_BLACKRECT,
             UI::{
                 HiDpi::GetDpiForWindow,
+                Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
                 WindowsAndMessaging::{
-                    CreateWindowExW, FindWindowExW, IsIconic, IsWindowVisible, SetWindowPos,
-                    ShowWindow, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WINDOW_STYLE,
-                    WS_CLIPCHILDREN, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+                    CreateWindowExW, DestroyWindow, FindWindowExW, IsIconic, IsWindowVisible,
+                    SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE,
+                    WINDOW_STYLE, WM_ACTIVATE, WM_DPICHANGED, WM_NCDESTROY, WM_SHOWWINDOW, WM_SIZE,
+                    WM_WINDOWPOSCHANGED, WS_CLIPCHILDREN, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+                    WS_POPUP,
                 },
             },
         },
@@ -85,16 +88,26 @@ mod gstreamer {
     };
 
     static GST_INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+    const PARENT_WINDOW_SUBCLASS_ID: usize = 0x4156_5041;
 
     thread_local! {
         static PLAYER: RefCell<Option<NativePlayer>> = const { RefCell::new(None) };
         static SURFACE: RefCell<Option<NativeSurface>> = const { RefCell::new(None) };
+        static SURFACE_PLACEMENT: RefCell<Option<SurfacePlacement>> = const { RefCell::new(None) };
     }
 
     #[derive(Clone, Copy)]
     struct NativeSurface {
         parent: HWND,
         child: HWND,
+    }
+
+    #[derive(Clone, Copy)]
+    struct SurfacePlacement {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
     }
 
     struct NativePlayer {
@@ -186,9 +199,64 @@ mod gstreamer {
                 )
             }
             .map_err(|error| Error::Pipeline(format!("failed to create video HWND: {error}")))?;
+            if !unsafe {
+                SetWindowSubclass(
+                    parent,
+                    Some(parent_window_subclass_proc),
+                    PARENT_WINDOW_SUBCLASS_ID,
+                    0,
+                )
+            }
+            .as_bool()
+            {
+                unsafe {
+                    let _ = DestroyWindow(child);
+                }
+                return Err(Error::Pipeline(format!(
+                    "failed to synchronize the video window with Tauri: {}",
+                    ::windows::core::Error::from_win32()
+                )));
+            }
             *slot.borrow_mut() = Some(NativeSurface { parent, child });
             Ok(())
         })
+    }
+
+    unsafe extern "system" fn parent_window_subclass_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _: usize,
+        _: usize,
+    ) -> LRESULT {
+        if message == WM_NCDESTROY {
+            SURFACE.with(|slot| {
+                if let Some(surface) = slot.borrow_mut().take() {
+                    unsafe {
+                        let _ = DestroyWindow(surface.child);
+                    }
+                }
+            });
+            SURFACE_PLACEMENT.with(|slot| *slot.borrow_mut() = None);
+            unsafe {
+                let _ = RemoveWindowSubclass(
+                    hwnd,
+                    Some(parent_window_subclass_proc),
+                    PARENT_WINDOW_SUBCLASS_ID,
+                );
+                return DefSubclassProc(hwnd, message, wparam, lparam);
+            }
+        }
+
+        let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
+        if matches!(
+            message,
+            WM_WINDOWPOSCHANGED | WM_DPICHANGED | WM_SHOWWINDOW | WM_SIZE | WM_ACTIVATE
+        ) {
+            let _ = sync_surface_window();
+        }
+        result
     }
 
     fn surface() -> Result<NativeSurface> {
@@ -208,7 +276,23 @@ mod gstreamer {
         aperture: Option<&NativeRect>,
         overlays: &[NativeRect],
     ) -> Result<()> {
+        SURFACE_PLACEMENT.with(|slot| {
+            *slot.borrow_mut() = Some(SurfacePlacement {
+                x,
+                y,
+                width,
+                height,
+            });
+        });
+        let _ = (aperture, overlays);
+        sync_surface_window()
+    }
+
+    fn sync_surface_window() -> Result<()> {
         let surface = surface()?;
+        let Some(placement) = SURFACE_PLACEMENT.with(|slot| *slot.borrow()) else {
+            return Ok(());
+        };
         if unsafe { IsIconic(surface.parent) }.as_bool()
             || !unsafe { IsWindowVisible(surface.parent) }.as_bool()
         {
@@ -223,10 +307,10 @@ mod gstreamer {
         } else {
             1.0
         };
-        let x = (x * scale).round() as i32;
-        let y = (y * scale).round() as i32;
-        let width = (width.max(1.0) * scale).round() as i32;
-        let height = (height.max(1.0) * scale).round() as i32;
+        let x = (placement.x * scale).round() as i32;
+        let y = (placement.y * scale).round() as i32;
+        let width = (placement.width.max(1.0) * scale).round() as i32;
+        let height = (placement.height.max(1.0) * scale).round() as i32;
         let mut origin = POINT { x, y };
         unsafe { ClientToScreen(surface.parent, &mut origin) }
             .ok()
@@ -247,7 +331,6 @@ mod gstreamer {
             )
         }
         .map_err(|error| Error::Pipeline(format!("failed to place video HWND: {error}")))?;
-        let _ = (aperture, overlays);
         Ok(())
     }
 
@@ -724,15 +807,6 @@ mod gstreamer {
 
     fn snapshot(player: &mut NativePlayer) -> Result<NativePlaybackSnapshot> {
         drain_bus(player)?;
-        let surface = player.source.read().clone();
-        place_surface(
-            surface.x,
-            surface.y,
-            surface.width,
-            surface.height,
-            surface.surface_aperture.as_ref(),
-            &surface.surface_overlays,
-        )?;
         let position = player
             .pipeline
             .query_position::<gst::ClockTime>()
