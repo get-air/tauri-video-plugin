@@ -49,7 +49,7 @@ mod gstreamer {
     };
 
     use ::windows::{
-        core::w,
+        core::{w, PCWSTR},
         Win32::{
             Foundation::HWND,
             Graphics::Gdi::{
@@ -60,9 +60,9 @@ mod gstreamer {
             UI::{
                 HiDpi::GetDpiForWindow,
                 WindowsAndMessaging::{
-                    CreateWindowExW, SetWindowPos, ShowWindow, HWND_TOP, SWP_NOACTIVATE,
-                    SWP_NOOWNERZORDER, SWP_SHOWWINDOW, SW_HIDE, WINDOW_EX_STYLE, WINDOW_STYLE,
-                    WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+                    CreateWindowExW, FindWindowExW, SetWindowPos, ShowWindow, HWND_TOP,
+                    SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_SHOWWINDOW, SW_HIDE, WINDOW_EX_STYLE,
+                    WINDOW_STYLE, WS_CHILD, WS_CLIPCHILDREN,
                 },
             },
         },
@@ -109,6 +109,8 @@ mod gstreamer {
         desired_playing: bool,
         error: Option<String>,
         last_rendered: u64,
+        region_frame_baseline: u64,
+        region_applied_after_first_frame: bool,
         last_sample_at: Instant,
         measured_fps: f64,
         tracks: Vec<NativeTrackInfo>,
@@ -168,7 +170,7 @@ mod gstreamer {
                     WINDOW_EX_STYLE::default(),
                     w!("STATIC"),
                     w!(""),
-                    WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WINDOW_STYLE(SS_BLACKRECT.0),
+                    WS_CHILD | WS_CLIPCHILDREN | WINDOW_STYLE(SS_BLACKRECT.0),
                     0,
                     0,
                     1,
@@ -225,11 +227,60 @@ mod gstreamer {
             )
         }
         .map_err(|error| Error::Pipeline(format!("failed to place video HWND: {error}")))?;
-        apply_surface_region(surface.child, scale, x, y, aperture, overlays)
+        apply_surface_regions(surface, scale, x, y, aperture, overlays)
     }
 
-    fn apply_surface_region(
-        surface: HWND,
+    fn refresh_surface_region(
+        x: f64,
+        y: f64,
+        aperture: Option<&NativeRect>,
+        overlays: &[NativeRect],
+    ) -> Result<()> {
+        let surface = surface()?;
+        let scale = f64::from(unsafe { GetDpiForWindow(surface.parent) }) / 96.0;
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        apply_surface_regions(
+            surface,
+            scale,
+            (x * scale).round() as i32,
+            (y * scale).round() as i32,
+            aperture,
+            overlays,
+        )
+    }
+
+    fn apply_surface_regions(
+        surface: NativeSurface,
+        scale: f64,
+        surface_x: i32,
+        surface_y: i32,
+        aperture: Option<&NativeRect>,
+        overlays: &[NativeRect],
+    ) -> Result<()> {
+        apply_window_region(
+            surface.child,
+            scale,
+            surface_x,
+            surface_y,
+            aperture,
+            overlays,
+        )?;
+        if let Some(renderer) = renderer_surface(surface) {
+            apply_window_region(renderer, scale, surface_x, surface_y, aperture, overlays)?;
+        }
+        Ok(())
+    }
+
+    fn renderer_surface(surface: NativeSurface) -> Option<HWND> {
+        unsafe { FindWindowExW(Some(surface.child), None, w!("GSTD3D11"), PCWSTR::null()) }.ok()
+    }
+
+    fn apply_window_region(
+        window: HWND,
         scale: f64,
         surface_x: i32,
         surface_y: i32,
@@ -238,7 +289,7 @@ mod gstreamer {
     ) -> Result<()> {
         let Some(aperture) = aperture else {
             unsafe {
-                SetWindowRgn(surface, None, true);
+                SetWindowRgn(window, None, true);
             }
             return Ok(());
         };
@@ -270,7 +321,7 @@ mod gstreamer {
                 ));
             }
         }
-        if unsafe { SetWindowRgn(surface, Some(surface_region), true) } == 0 {
+        if unsafe { SetWindowRgn(window, Some(surface_region), true) } == 0 {
             unsafe {
                 let _ = DeleteObject(HGDIOBJ(surface_region.0));
             }
@@ -300,6 +351,9 @@ mod gstreamer {
             unsafe {
                 let _ = ShowWindow(surface.child, SW_HIDE);
                 SetWindowRgn(surface.child, None, true);
+                if let Some(renderer) = renderer_surface(surface) {
+                    SetWindowRgn(renderer, None, true);
+                }
             }
         }
     }
@@ -405,6 +459,8 @@ mod gstreamer {
             desired_playing: payload.autoplay,
             error: None,
             last_rendered: 0,
+            region_frame_baseline: 0,
+            region_applied_after_first_frame: false,
             last_sample_at: Instant::now(),
             measured_fps: 0.0,
             tracks: vec![],
@@ -482,6 +538,8 @@ mod gstreamer {
         player.desired_playing = payload.autoplay;
         player.error = None;
         player.last_rendered = rendered_frames(&player.video_sink);
+        player.region_frame_baseline = player.last_rendered;
+        player.region_applied_after_first_frame = false;
         player.last_sample_at = Instant::now();
         player.measured_fps = 0.0;
         player.tracks.clear();
@@ -496,6 +554,13 @@ mod gstreamer {
             .pipeline
             .set_state(state)
             .map_err(|error| Error::Pipeline(error.to_string()))?;
+        player.overlay.expose();
+        refresh_surface_region(
+            payload.x,
+            payload.y,
+            payload.surface_aperture.as_ref(),
+            &payload.surface_overlays,
+        )?;
         player.session_key.clone_from(&payload.session_key);
         Ok(())
     }
@@ -517,6 +582,8 @@ mod gstreamer {
             match payload.action.as_str() {
                 "play" => {
                     player.desired_playing = true;
+                    player.region_frame_baseline = rendered_frames(&player.video_sink);
+                    player.region_applied_after_first_frame = false;
                     player
                         .pipeline
                         .set_state(gst::State::Playing)
@@ -558,9 +625,9 @@ mod gstreamer {
 
     pub fn layout(payload: NativeLayoutRequest) -> Result<()> {
         PLAYER.with(|slot| {
-            let slot = slot.borrow();
+            let mut slot = slot.borrow_mut();
             let player = slot
-                .as_ref()
+                .as_mut()
                 .ok_or_else(|| Error::InvalidRequest("native player is not open".into()))?;
             ensure_session(&player.session_key, &payload.session_key)?;
             place_surface(
@@ -572,6 +639,19 @@ mod gstreamer {
                 &payload.surface_overlays,
             )?;
             player.overlay.expose();
+            refresh_surface_region(
+                payload.x,
+                payload.y,
+                payload.surface_aperture.as_ref(),
+                &payload.surface_overlays,
+            )?;
+            let mut source = player.source.write();
+            source.x = payload.x;
+            source.y = payload.y;
+            source.width = payload.width;
+            source.height = payload.height;
+            source.surface_aperture = payload.surface_aperture;
+            source.surface_overlays = payload.surface_overlays;
             Ok(())
         })
     }
@@ -643,6 +723,16 @@ mod gstreamer {
         let structure = player.video_sink.property::<gst::Structure>("stats");
         let rendered = structure.get::<u64>("rendered").unwrap_or(0);
         let dropped = structure.get::<u64>("dropped").unwrap_or(0);
+        if !player.region_applied_after_first_frame && rendered > player.region_frame_baseline {
+            let source = player.source.read().clone();
+            refresh_surface_region(
+                source.x,
+                source.y,
+                source.surface_aperture.as_ref(),
+                &source.surface_overlays,
+            )?;
+            player.region_applied_after_first_frame = true;
+        }
         let now = Instant::now();
         let elapsed = now.duration_since(player.last_sample_at).as_secs_f64();
         if elapsed >= 0.5 {
