@@ -1,7 +1,6 @@
 const COMMANDS: &[&str] = &[
     "native_diagnostics",
     "native_open",
-    "native_frame_stream",
     "native_control",
     "native_layout",
     "native_stats",

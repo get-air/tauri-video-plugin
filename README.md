@@ -23,9 +23,10 @@ the Tauri backend installed. The DOM still owns layout, controls, and overlays.
 | macOS | Not supported | — | — |
 | iOS | Not supported | — | — |
 
-Linux and Android present directly into native surfaces. Windows sends decoded
-RGBA frames over Tauri's binary channel and uploads them to a WebGL texture so
-video, controls, tooltips, resize, and Snap Layouts share one OS window.
+Linux and Android present directly into native surfaces. Windows keeps decoded
+frames in D3D11 and presents them through a DirectComposition visual attached
+to the Tauri HWND. The WebView stays above that visual in the same OS window,
+so controls, tooltips, resize, and Snap Layouts remain atomic.
 Containers, codecs, DRM, HDR, and UHD limits depend on the selected engine and
 target hardware.
 

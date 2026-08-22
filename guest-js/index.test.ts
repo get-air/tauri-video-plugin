@@ -193,9 +193,7 @@ describe('native controller contract', () => {
     expect(mocks.invoke.mock.calls.map(([command]) => commandName(command)))
       .toEqual([
         'native_diagnostics',
-        'native_frame_stream',
         'native_open',
-        'native_frame_stream',
         'native_open',
       ])
     const open = mocks.invoke.mock.calls.find(([command]) => commandName(command) === 'native_open')
@@ -393,7 +391,7 @@ describe('native controller contract', () => {
     expect(remove).toHaveBeenCalledWith('abort', abortHandler)
   })
 
-  it('exposes complete Windows canvas geometry controls', async () => {
+  it('exposes complete Windows DirectComposition geometry without JS frame copies', async () => {
     const controller = await attach()
     expect(controller.capabilities).toMatchObject({ videoFit: true, videoZoom: true })
     mocks.invoke.mockClear()
@@ -403,6 +401,7 @@ describe('native controller contract', () => {
     await controller.setVideoZoom(1.25)
 
     expect(nativeActions()).toEqual(['stretch', 'crop', 'zoom'])
+    await expect(controller.stats()).resolves.toMatchObject({ decodedFrameCopies: 0 })
   })
 
   it('preserves complete fit and zoom support for Linux mpv', async () => {

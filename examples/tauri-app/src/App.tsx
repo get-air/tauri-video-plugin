@@ -182,7 +182,7 @@ export default function App() {
 
   const videoTrack = telemetry.media.tracks.find((track) => track.kind === 'video' && track.selected)
   const audioTrack = telemetry.media.tracks.find((track) => track.kind === 'audio' && track.selected)
-  const hardware = windows ? 'WebGL surface' : 'Native surface'
+  const hardware = windows ? 'D3D11 · DirectComposition' : 'Native surface'
   const backendName = formatBackend(activeBackend, requestedBackend)
   const container = telemetry.media.container && telemetry.media.container !== 'unknown'
     ? telemetry.media.container

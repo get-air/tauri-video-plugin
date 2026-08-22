@@ -76,11 +76,17 @@ impl Builder {
     }
 
     pub fn build<R: Runtime>(self) -> TauriPlugin<R> {
+        #[cfg(target_os = "windows")]
+        if std::env::var_os("COREWEBVIEW2_FORCED_HOSTING_MODE").is_none() {
+            std::env::set_var(
+                "COREWEBVIEW2_FORCED_HOSTING_MODE",
+                "COREWEBVIEW2_HOSTING_MODE_WINDOW_TO_VISUAL",
+            );
+        }
         TauriBuilder::new("video")
             .invoke_handler(tauri::generate_handler![
                 commands::native_diagnostics,
                 commands::native_open,
-                commands::native_frame_stream,
                 commands::native_control,
                 commands::native_layout,
                 commands::native_stats,

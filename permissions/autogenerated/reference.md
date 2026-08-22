@@ -6,7 +6,6 @@ Verify, open, and control the native video player, update its layout, and read p
 
 - `allow-native-diagnostics`
 - `allow-native-open`
-- `allow-native-frame-stream`
 - `allow-native-control`
 - `allow-native-layout`
 - `allow-native-stats`
@@ -95,32 +94,6 @@ Enables the native_diagnostics command without any pre-configured scope.
 <td>
 
 Denies the native_diagnostics command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`video:allow-native-frame-stream`
-
-</td>
-<td>
-
-Enables the native_frame_stream command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`video:deny-native-frame-stream`
-
-</td>
-<td>
-
-Denies the native_frame_stream command without any pre-configured scope.
 
 </td>
 </tr>

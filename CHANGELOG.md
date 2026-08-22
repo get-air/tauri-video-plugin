@@ -5,12 +5,13 @@ Release numbering follows the
 
 ## Unreleased
 
-- Replace the Windows two-window D3D11 surface with a single-window GStreamer
-  appsink → raw Tauri channel → WebGL renderer, preserving HTML controls and
-  tooltips during live resize and Snap Layouts.
-- Support Windows fit, crop-to-cover, stretch, and zoom in the WebGL presenter.
-- Report the selected Windows GStreamer decoder and decoded-frame transport
-  count, with D3D11-memory download and software-decoder fallback paths.
+- Replace the Windows two-window surface with a D3D11/DirectComposition visual
+  on the Tauri HWND, preserving HTML controls and tooltips during live resize
+  and Snap Layouts without moving decoded frames through JavaScript.
+- Support Windows fit, crop-to-cover, stretch, and zoom in the native GPU
+  presenter.
+- Report the selected Windows GStreamer decoder and presented-frame count,
+  with a GPU-resident D3D11 path and software-decoder upload fallback.
 - Add Windows pixel checks for playback, seek, pause/resume, zoomed overlays,
   tooltips, resize, fullscreen, and Snap Layouts.
 

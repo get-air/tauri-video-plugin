@@ -2,9 +2,6 @@ use serde::de::DeserializeOwned;
 use std::{sync::mpsc, time::Duration};
 use tauri::{plugin::PluginApi, AppHandle, Runtime};
 
-#[cfg(windows)]
-use tauri::ipc::{Channel, InvokeResponseBody};
-
 use crate::models::{
     NativeControlRequest, NativeLayoutRequest, NativeOpenRequest, NativePlaybackSnapshot,
     NativeSessionRequest,
@@ -82,15 +79,6 @@ impl<R: Runtime> DesktopVideo<R> {
     #[cfg(windows)]
     pub fn open_native(&self, payload: NativeOpenRequest) -> crate::Result<NativePlaybackSnapshot> {
         self.run_on_windows_main(move |app| windows::open(app, payload))
-    }
-
-    #[cfg(windows)]
-    pub fn frame_stream_native(
-        &self,
-        session_key: String,
-        channel: Channel<InvokeResponseBody>,
-    ) -> crate::Result<()> {
-        windows::frame_stream(session_key, channel)
     }
 
     #[cfg(windows)]

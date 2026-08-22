@@ -41,7 +41,6 @@ default = ["gstreamer-runtime"]
 gstreamer-runtime = [
   "dep:gio",
   "dep:gstreamer",
-  "dep:gstreamer-app",
   "dep:gstreamer-video",
 ]
 mpv-runtime = ["dep:libc", "dep:libmpv2"]
@@ -67,7 +66,14 @@ libmpv2 = { version = "5.0.3", default-features = true, optional = true }
 [target.'cfg(windows)'.dependencies]
 gio = { version = "0.22", optional = true }
 gstreamer = { version = "0.25.3", optional = true }
-gstreamer-app = { version = "0.25.0", optional = true }
 gstreamer-video = { version = "0.25.3", optional = true }
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Direct3D",
+  "Win32_Graphics_Direct3D11",
+  "Win32_Graphics_DirectComposition",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+] }
 [build-dependencies]
 tauri-plugin = { version = "2.6.3", features = ["build"] }

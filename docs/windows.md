@@ -1,14 +1,17 @@
 # Windows runtime
 
-Windows playback uses GStreamer `playbin3` with an `appsink`. Decoded RGBA
-frames cross Tauri's raw binary `Channel` and are uploaded to a WebGL texture
-inside the existing media-controller DOM. There is no native video HWND,
-transparent WebView aperture, popup tool window, base64 serialization, or
-localhost frame bridge.
+Windows playback uses GStreamer `playbin3` with `d3d11videosink`. The sink draws
+onto a keyed shared D3D11 texture, and a DirectComposition flip-model swapchain
+presents that texture under WebView2 on the existing Tauri HWND. Decoded pixels
+never cross Tauri IPC or JavaScript. There is no second native video HWND,
+popup tool window, base64 serialization, localhost frame bridge, canvas, or
+WebGL upload.
 
-The result is one ordinary opaque Tauri window. Video, controls, tooltips, and
-arbitrary HTML participate in the same WebView composition, so Windows owns
-dragging, live resize, maximize, fullscreen, and Snap Layouts atomically.
+The result is one ordinary top-level Tauri window. WebView2 uses its
+Window-to-Visual hosting mode, with a CSS aperture over the video visual.
+Controls, tooltips, and arbitrary HTML remain in the WebView visual above the
+video, while Windows owns dragging, live resize, maximize, fullscreen, and Snap
+Layouts atomically.
 
 ## Development runtime
 
@@ -28,21 +31,22 @@ tauri-plugin-video = { version = "0.3" }
 on Windows. Explicit `'gstreamer'` selects the same engine. mpv is not compiled
 or selected there.
 
-The WebGL presenter supports `fit`, crop-to-cover, `stretch`, and zoom without
-changing the decoded stream.
+The D3D11 presenter supports `fit`, crop-to-cover, `stretch`, and zoom without
+moving decoded pixels through the CPU. Crop-to-cover is negotiated by
+GStreamer's `aspectratiocrop`; zoom is a DirectComposition transform.
 
 ## Decode and presentation
 
-The sink negotiates system-memory RGBA for the binary frame boundary. When a
-D3D11 decoder is available, `d3d11download` accepts its `D3D11Memory` output;
-otherwise the same chain accepts normal system-memory output from software
-decoders such as `avdec_h264`, `vp8dec`, or `theoradec`. Runtime telemetry names
-the selected decoder rather than claiming hardware acceleration unconditionally.
+With a GStreamer D3D11 decoder, decode output remains in `D3D11Memory` through
+presentation. `d3d11videosink` renders into the plugin's shared texture and the
+presenter issues one GPU `CopyResource` into the composition swapchain. There
+is no decoded-frame readback, CPU copy, IPC transfer, or WebView texture upload.
 
-The presenter performs one decoded-frame transfer into the WebView and one
-WebGL texture upload. Its appsink queue is bounded to two frames and drops stale
-frames instead of building an unbounded latency queue. `decodedFrameCopies`
-reports the transported-frame count.
+Software decoders such as `avdec_h264`, `vp8dec`, or `theoradec` remain valid;
+GStreamer uploads their output at the D3D11 sink boundary. Runtime telemetry
+names the decoder that was actually selected rather than claiming hardware
+acceleration unconditionally. `decodedFrameCopies` is zero because no decoded
+frame crosses the JavaScript/native boundary.
 
 The Windows backend uses the same
 `backendOptions.tauri.windows.buffer` opt-in overrides as Linux. Omit them to
