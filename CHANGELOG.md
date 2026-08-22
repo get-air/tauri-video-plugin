@@ -5,13 +5,13 @@ Release numbering follows the
 
 ## Unreleased
 
-- Replace the Windows two-window surface with a D3D11/DirectComposition visual
-  on the Tauri HWND, preserving HTML controls and tooltips during live resize
-  and Snap Layouts without moving decoded frames through JavaScript.
-- Support Windows fit, crop-to-cover, stretch, and zoom in the native GPU
-  presenter.
+- Replace the Windows external video surface with WebView2 TextureStream,
+  presenting pooled GStreamer D3D11 textures on the real HTML video element so
+  controls, scrolling, live resize, fullscreen, and Snap Layouts are one
+  compositor transaction.
+- Support Windows fit, crop-to-cover, stretch, and zoom through DOM geometry.
 - Report the selected Windows GStreamer decoder and presented-frame count,
-  with a GPU-resident D3D11 path and software-decoder upload fallback.
+  with a GPU-resident NV12 path and software-decoder upload fallback.
 - Add Windows pixel checks for playback, seek, pause/resume, zoomed overlays,
   tooltips, resize, fullscreen, and Snap Layouts.
 

@@ -57,8 +57,25 @@ async function waitFor(predicate: (value: Sample) => boolean, timeoutMs = 60_000
 
 try {
   if (options.source) {
+    await runtime.evaluate<void>(
+      'void (window.__TAURI_VIDEO_PREVIOUS_CONTROLLER__ = window.__TAURI_VIDEO_TEST__?.controller)',
+    )
     await runtime.evaluate<void>(`window.__TAURI_VIDEO_TEST__.loadSource(${JSON.stringify(options.source)})`, true)
-    await delay(1_000)
+    const started = Date.now()
+    while (Date.now() - started < 60_000) {
+      await delay(250)
+      if (await runtime.evaluate<boolean>(`Boolean(
+        window.__TAURI_VIDEO_TEST__?.controller
+          && window.__TAURI_VIDEO_TEST__.controller !== window.__TAURI_VIDEO_PREVIOUS_CONTROLLER__
+      )`)) break
+    }
+    if (!await runtime.evaluate<boolean>(`Boolean(
+      window.__TAURI_VIDEO_TEST__?.controller
+        && window.__TAURI_VIDEO_TEST__.controller !== window.__TAURI_VIDEO_PREVIOUS_CONTROLLER__
+    )`)) {
+      throw new Error('Timed out waiting for the replacement native video controller')
+    }
+    await runtime.evaluate<void>('delete window.__TAURI_VIDEO_PREVIOUS_CONTROLLER__')
   }
   await runtime.evaluate<void>('window.__TAURI_VIDEO_TEST__.play()', true)
   const playing = await waitFor((value) => (

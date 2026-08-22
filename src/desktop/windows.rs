@@ -9,7 +9,11 @@ use crate::{
 };
 
 #[cfg(feature = "gstreamer-runtime")]
-mod dcomp;
+mod texture_stream;
+
+pub fn prepare_texture_stream<R: Runtime>(app: &AppHandle<R>, stream_id: String) -> Result<()> {
+    gstreamer::prepare_texture_stream(app, stream_id)
+}
 
 pub fn open<R: Runtime>(
     app: &AppHandle<R>,
@@ -44,20 +48,20 @@ pub fn close(payload: NativeSessionRequest) -> Result<()> {
 
 #[cfg(feature = "gstreamer-runtime")]
 mod gstreamer {
-    use super::dcomp;
+    use super::texture_stream;
     use std::{
         cell::RefCell,
         collections::BTreeSet,
-        ffi::{c_char, c_void},
         sync::{
             atomic::{AtomicU64, Ordering},
             Arc, LazyLock, OnceLock,
         },
-        time::Instant,
+        time::{Duration, Instant},
     };
 
     use gst::prelude::*;
     use gstreamer as gst;
+    use gstreamer_app::{AppSink, AppSinkCallbacks};
     use parking_lot::{Mutex, RwLock};
     use tauri::{AppHandle, Manager, Runtime};
 
@@ -70,25 +74,20 @@ mod gstreamer {
     };
 
     static GST_INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
-    static PRESENTER: LazyLock<RwLock<Option<Arc<Mutex<dcomp::DCompPresenter>>>>> =
+    static PRESENTER: LazyLock<RwLock<Option<Arc<Mutex<texture_stream::TextureStreamPresenter>>>>> =
         LazyLock::new(|| RwLock::new(None));
+    static PRESENTER_GENERATION: AtomicU64 = AtomicU64::new(0);
 
     thread_local! {
         static PLAYER: RefCell<Option<NativePlayer>> = const { RefCell::new(None) };
-    }
-
-    unsafe extern "C" {
-        fn g_signal_emit_by_name(instance: *mut c_void, detailed_signal: *const c_char, ...);
     }
 
     struct NativePlayer {
         session_key: String,
         pipeline: gst::Element,
         video_sink: gst::Element,
-        aspect_crop: gst::Element,
         source: Arc<RwLock<NativeOpenRequest>>,
         presented_frames: Arc<AtomicU64>,
-        fit_mode: FitMode,
         buffering_percent: i32,
         buffer_duration_seconds: Option<f64>,
         target_buffer_bytes: Option<u64>,
@@ -99,14 +98,7 @@ mod gstreamer {
         measured_fps: f64,
         tracks: Vec<NativeTrackInfo>,
         selected_streams: BTreeSet<String>,
-    }
-
-    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-    enum FitMode {
-        #[default]
-        Fit,
-        Cover,
-        Stretch,
+        presenter_generation: u64,
     }
 
     pub fn open<R: Runtime>(
@@ -114,13 +106,29 @@ mod gstreamer {
         payload: NativeOpenRequest,
     ) -> Result<NativePlaybackSnapshot> {
         initialize_gstreamer()?;
-        ensure_presenter(app, &payload)?;
+        let _ = app;
+        if PRESENTER.read().is_none() {
+            return Err(Error::Pipeline(
+                "WebView2 texture stream was not prepared before native_open".into(),
+            ));
+        }
 
         PLAYER.with(|slot| {
             let mut slot = slot.borrow_mut();
-            if let Some(player) = slot.as_mut() {
+            let generation = PRESENTER_GENERATION.load(Ordering::Acquire);
+            if let Some(player) = slot
+                .as_mut()
+                .filter(|player| player.presenter_generation == generation)
+            {
                 load_source(player, &payload)?;
                 return snapshot(player);
+            }
+
+            if let Some(player) = slot.as_mut() {
+                player
+                    .pipeline
+                    .set_state(gst::State::Ready)
+                    .map_err(|error| Error::Pipeline(error.to_string()))?;
             }
 
             let mut player = create_player(&payload)?;
@@ -137,28 +145,39 @@ mod gstreamer {
             .map_err(Error::RuntimeUnavailable)
     }
 
-    fn ensure_presenter<R: Runtime>(app: &AppHandle<R>, payload: &NativeOpenRequest) -> Result<()> {
+    pub fn prepare_texture_stream<R: Runtime>(app: &AppHandle<R>, stream_id: String) -> Result<()> {
+        initialize_gstreamer()?;
+        gst::Plugin::load_by_name("d3d11")
+            .map_err(|error| Error::RuntimeUnavailable(error.to_string()))?;
         let window = app
             .webview_windows()
             .into_values()
             .next()
             .ok_or_else(|| Error::Pipeline("no Tauri webview window is available".into()))?;
+        let app_context = app.clone();
+        let dispatch: texture_stream::UiDispatch = Arc::new(move |job| {
+            app_context
+                .run_on_main_thread(job)
+                .map_err(|error| Error::Pipeline(error.to_string()))
+        });
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         window
-            .as_ref()
-            .set_background_color(Some(tauri::webview::Color(0, 0, 0, 0)))
+            .with_webview(move |webview| {
+                let result = texture_stream::TextureStreamPresenter::new(
+                    &webview.environment(),
+                    &stream_id,
+                    dispatch,
+                );
+                let _ = sender.send(result);
+            })
             .map_err(|error| Error::Pipeline(error.to_string()))?;
-        let parent = window
-            .hwnd()
-            .map_err(|error| Error::Pipeline(error.to_string()))?;
-        if PRESENTER.read().is_none() {
-            *PRESENTER.write() = Some(Arc::new(Mutex::new(dcomp::DCompPresenter::new(
-                parent,
-                payload.x.round() as i32,
-                payload.y.round() as i32,
-                payload.width.max(1.0).round() as u32,
-                payload.height.max(1.0).round() as u32,
-            )?)));
-        }
+        let presenter = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| {
+                Error::Pipeline(format!("WebView2 texture stream timed out: {error}"))
+            })??;
+        *PRESENTER.write() = Some(Arc::new(Mutex::new(presenter)));
+        PRESENTER_GENERATION.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
@@ -207,64 +226,124 @@ mod gstreamer {
         }
     }
 
+    fn present_texture_sample(
+        sample: &gst::Sample,
+        presenter: &Arc<Mutex<texture_stream::TextureStreamPresenter>>,
+        frame_counter: &AtomicU64,
+    ) -> std::result::Result<gst::FlowSuccess, gst::FlowError> {
+        let caps = sample.caps().ok_or(gst::FlowError::NotNegotiated)?;
+        let structure = caps.structure(0).ok_or(gst::FlowError::NotNegotiated)?;
+        let width = structure.get::<i32>("width").unwrap_or(0).max(0) as u32;
+        let height = structure.get::<i32>("height").unwrap_or(0).max(0) as u32;
+        if width == 0 || height == 0 {
+            return Err(gst::FlowError::NotNegotiated);
+        }
+        static PRESENTATION_CLOCK: LazyLock<Instant> = LazyLock::new(Instant::now);
+        let timestamp = PRESENTATION_CLOCK
+            .elapsed()
+            .as_micros()
+            .min(u128::from(u64::MAX)) as u64;
+        let mut presenter = presenter.lock();
+        let Some(target) = presenter
+            .acquire(width, height)
+            .map_err(|_| gst::FlowError::Error)?
+        else {
+            return Ok(gst::FlowSuccess::Ok);
+        };
+        presenter
+            .copy_sample(sample, &target)
+            .and_then(|_| presenter.present(target, timestamp))
+            .map_err(|_| gst::FlowError::Error)?;
+        frame_counter.fetch_add(1, Ordering::Relaxed);
+        Ok(gst::FlowSuccess::Ok)
+    }
+
     fn create_player(payload: &NativeOpenRequest) -> Result<NativePlayer> {
         let source = Arc::new(RwLock::new(payload.clone()));
         let presented_frames = Arc::new(AtomicU64::new(0));
-        let frame_counter = Arc::clone(&presented_frames);
-        let presenter =
-            PRESENTER.read().as_ref().cloned().ok_or_else(|| {
-                Error::Pipeline("DirectComposition presenter is unavailable".into())
-            })?;
-        let video_sink = gst::ElementFactory::make("d3d11videosink")
-            .property("draw-on-shared-texture", true)
-            .property("force-aspect-ratio", true)
-            .property("sync", true)
-            .property("enable-last-sample", false)
+        let presenter = PRESENTER
+            .read()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::Pipeline("WebView2 texture stream is unavailable".into()))?;
+        let gst_context = presenter.lock().gst_context();
+        let gpu_color_conversion = presenter.lock().supports_gpu_color_conversion();
+        let caps = gst::Caps::builder("video/x-raw")
+            .field("format", "NV12")
+            .features(["memory:D3D11Memory"])
+            .build();
+        let sample_presenter = Arc::clone(&presenter);
+        let sample_counter = Arc::clone(&presented_frames);
+        let preroll_presenter = Arc::clone(&presenter);
+        let preroll_counter = Arc::clone(&presented_frames);
+        let app_sink = AppSink::builder()
+            .caps(&caps)
+            .sync(true)
+            .max_buffers(4)
+            .drop(true)
+            .enable_last_sample(false)
+            .callbacks(
+                AppSinkCallbacks::builder()
+                    .new_sample(move |sink| {
+                        let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                        present_texture_sample(&sample, &sample_presenter, &sample_counter)
+                    })
+                    .new_preroll(move |sink| {
+                        let sample = sink.pull_preroll().map_err(|_| gst::FlowError::Eos)?;
+                        present_texture_sample(&sample, &preroll_presenter, &preroll_counter)
+                    })
+                    .build(),
+            )
+            .build();
+        let video_sink = app_sink.clone().upcast::<gst::Element>();
+        let upload = gst::ElementFactory::make("d3d11upload")
             .build()
-            .map_err(|error| Error::Pipeline(format!("d3d11videosink is unavailable: {error}")))?;
-        video_sink.connect("begin-draw", false, move |values| {
-            let Ok(sink) = values[0].get::<gst::Element>() else {
-                return None;
-            };
-            let presenter = presenter.lock();
-            let (handle, misc_flags) = presenter.shared_draw_info();
-            let mut drawn = 0_i32;
-            unsafe {
-                g_signal_emit_by_name(
-                    sink.as_ptr().cast(),
-                    c"draw".as_ptr(),
-                    handle,
-                    misc_flags,
-                    0_u64,
-                    0_u64,
-                    &mut drawn,
-                );
-            }
-            if drawn != 0 {
-                match presenter.present_shared() {
-                    Ok(()) => {
-                        frame_counter.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(error) => tracing::warn!(%error, "failed to present a D3D11 video frame"),
-                }
-            }
-            None
-        });
-        let aspect_crop = gst::ElementFactory::make("aspectratiocrop")
-            .property("aspect-ratio", gst::Fraction::new(0, 1))
-            .build()
-            .map_err(|error| Error::Pipeline(format!("aspectratiocrop is unavailable: {error}")))?;
+            .map_err(|error| Error::Pipeline(format!("d3d11upload is unavailable: {error}")))?;
         let sink_bin = gst::Bin::new();
-        sink_bin
-            .add_many([&aspect_crop, &video_sink])
-            .and_then(|_| aspect_crop.link(&video_sink))
-            .map_err(|error| {
-                Error::Pipeline(format!("could not build the Windows video sink: {error}"))
-            })?;
-        let crop_sink_pad = aspect_crop
+        let first = if gpu_color_conversion {
+            let convert = gst::ElementFactory::make("d3d11convert")
+                .build()
+                .map_err(|error| {
+                    Error::Pipeline(format!("d3d11convert is unavailable: {error}"))
+                })?;
+            sink_bin
+                .add_many([&upload, &convert, &video_sink])
+                .and_then(|_| gst::Element::link_many([&upload, &convert, &video_sink]))
+                .map_err(|error| {
+                    Error::Pipeline(format!(
+                        "could not build the GPU Windows video sink: {error}"
+                    ))
+                })?;
+            upload.clone()
+        } else {
+            let convert = gst::ElementFactory::make("videoconvert")
+                .build()
+                .map_err(|error| {
+                    Error::Pipeline(format!("videoconvert is unavailable: {error}"))
+                })?;
+            let system_caps = gst::Caps::builder("video/x-raw")
+                .field("format", "NV12")
+                .build();
+            let caps_filter = gst::ElementFactory::make("capsfilter")
+                .property("caps", &system_caps)
+                .build()
+                .map_err(|error| Error::Pipeline(format!("capsfilter is unavailable: {error}")))?;
+            sink_bin
+                .add_many([&convert, &caps_filter, &upload, &video_sink])
+                .and_then(|_| {
+                    gst::Element::link_many([&convert, &caps_filter, &upload, &video_sink])
+                })
+                .map_err(|error| {
+                    Error::Pipeline(format!(
+                        "could not build the software Windows video sink: {error}"
+                    ))
+                })?;
+            convert
+        };
+        let first_sink_pad = first
             .static_pad("sink")
-            .ok_or_else(|| Error::Pipeline("aspectratiocrop has no sink pad".into()))?;
-        let ghost = gst::GhostPad::builder_with_target(&crop_sink_pad)
+            .ok_or_else(|| Error::Pipeline("Windows video conversion has no sink pad".into()))?;
+        let ghost = gst::GhostPad::builder_with_target(&first_sink_pad)
             .map_err(|error| Error::Pipeline(error.to_string()))?
             .name("sink")
             .build();
@@ -295,6 +374,7 @@ mod gstreamer {
         let pipeline = pipeline_builder
             .build()
             .map_err(|error| Error::Pipeline(format!("playbin3 is unavailable: {error}")))?;
+        pipeline.set_context(&gst_context);
         let source_for_setup = Arc::clone(&source);
         pipeline.connect("source-setup", false, move |values| {
             if let Ok(element) = values[1].get::<gst::Element>() {
@@ -307,10 +387,8 @@ mod gstreamer {
             session_key: String::new(),
             pipeline,
             video_sink,
-            aspect_crop,
             source,
             presented_frames,
-            fit_mode: FitMode::Fit,
             buffering_percent: 0,
             buffer_duration_seconds,
             target_buffer_bytes,
@@ -321,6 +399,7 @@ mod gstreamer {
             measured_fps: 0.0,
             tracks: vec![],
             selected_streams: BTreeSet::new(),
+            presenter_generation: PRESENTER_GENERATION.load(Ordering::Acquire),
         };
         load_source(&mut player, payload)?;
         Ok(player)
@@ -384,10 +463,6 @@ mod gstreamer {
         player.measured_fps = 0.0;
         player.tracks.clear();
         player.selected_streams.clear();
-        set_fit_mode(player, FitMode::Fit)?;
-        if let Some(presenter) = PRESENTER.read().as_ref().cloned() {
-            presenter.lock().reset()?;
-        }
 
         let state = if payload.autoplay {
             gst::State::Playing
@@ -418,30 +493,6 @@ mod gstreamer {
             })
             .map(|element| element.name().to_string())
             .unwrap_or_else(|| "unknown-decoder".into())
-    }
-
-    fn set_fit_mode(player: &mut NativePlayer, mode: FitMode) -> Result<()> {
-        player.fit_mode = mode;
-        player
-            .video_sink
-            .set_property("force-aspect-ratio", mode != FitMode::Stretch);
-        if mode == FitMode::Cover {
-            let source = player.source.read();
-            update_crop_aspect(player, source.width, source.height);
-        } else {
-            player
-                .aspect_crop
-                .set_property("aspect-ratio", gst::Fraction::new(0, 1));
-        }
-        Ok(())
-    }
-
-    fn update_crop_aspect(player: &NativePlayer, width: f64, height: f64) {
-        let width = width.round().clamp(1.0, i32::MAX as f64) as i32;
-        let height = height.round().clamp(1.0, i32::MAX as f64) as i32;
-        player
-            .aspect_crop
-            .set_property("aspect-ratio", gst::Fraction::new(width, height));
     }
 
     pub fn control(payload: NativeControlRequest) -> Result<NativePlaybackSnapshot> {
@@ -478,16 +529,7 @@ mod gstreamer {
                 "volume" => player
                     .pipeline
                     .set_property("volume", payload.value.clamp(0.0, 1.0)),
-                "fit" => set_fit_mode(player, FitMode::Fit)?,
-                "crop" => set_fit_mode(player, FitMode::Cover)?,
-                "stretch" => set_fit_mode(player, FitMode::Stretch)?,
-                "zoom" => {
-                    if let Some(presenter) = PRESENTER.read().as_ref().cloned() {
-                        presenter
-                            .lock()
-                            .set_zoom(payload.value.clamp(1.0, 2.0) as f32)?;
-                    }
-                }
+                "fit" | "crop" | "stretch" | "zoom" => {}
                 "track" => select_stream(player, payload.index, true)?,
                 "deselectTrack" => select_stream(player, payload.index, false)?,
                 action => {
@@ -507,17 +549,6 @@ mod gstreamer {
                 .as_mut()
                 .ok_or_else(|| Error::InvalidRequest("native player is not open".into()))?;
             ensure_session(&player.session_key, &payload.session_key)?;
-            if let Some(presenter) = PRESENTER.read().as_ref().cloned() {
-                presenter.lock().place(
-                    payload.x.round() as i32,
-                    payload.y.round() as i32,
-                    payload.width.max(1.0).round() as u32,
-                    payload.height.max(1.0).round() as u32,
-                )?;
-            }
-            if player.fit_mode == FitMode::Cover {
-                update_crop_aspect(player, payload.width, payload.height);
-            }
             let mut source = player.source.write();
             source.x = payload.x;
             source.y = payload.y;
@@ -630,7 +661,7 @@ mod gstreamer {
             dropped_frames: dropped,
             measured_fps: player.measured_fps,
             hardware_backend: format!(
-                "gstreamer:{}:d3d11-dcomp-win32",
+                "gstreamer:{}:d3d11-webview2-texture-stream",
                 active_video_decoder(&player.pipeline)
             ),
             encoded_bytes_buffered: player.target_buffer_bytes.map_or(0, |target| {

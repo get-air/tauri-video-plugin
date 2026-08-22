@@ -6,6 +6,7 @@ Verify, open, and control the native video player, update its layout, and read p
 
 - `allow-native-diagnostics`
 - `allow-native-open`
+- `allow-native-prepare-texture-stream`
 - `allow-native-control`
 - `allow-native-layout`
 - `allow-native-stats`
@@ -146,6 +147,32 @@ Enables the native_open command without any pre-configured scope.
 <td>
 
 Denies the native_open command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`video:allow-native-prepare-texture-stream`
+
+</td>
+<td>
+
+Enables the native_prepare_texture_stream command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`video:deny-native-prepare-texture-stream`
+
+</td>
+<td>
+
+Denies the native_prepare_texture_stream command without any pre-configured scope.
 
 </td>
 </tr>

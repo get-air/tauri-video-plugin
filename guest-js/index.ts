@@ -47,6 +47,20 @@ export {
 
 const COMMAND = 'plugin:video|'
 
+interface WebView2TextureStreamApi {
+  getTextureStream(streamId: string): Promise<MediaStream>
+}
+
+function webView2TextureStream(): WebView2TextureStreamApi | undefined {
+  const scope = globalThis as typeof globalThis & {
+    chrome?: { webview?: Partial<WebView2TextureStreamApi> }
+  }
+  const getTextureStream = scope.chrome?.webview?.getTextureStream
+  return typeof getTextureStream === 'function'
+    ? { getTextureStream: getTextureStream.bind(scope.chrome?.webview) }
+    : undefined
+}
+
 export type NativeVideoBackend = 'media3' | 'libvlc' | 'gstreamer' | 'mpv'
 
 export interface NativeBufferOptions {
@@ -166,6 +180,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
   #layoutDirty = false
   #scrollTargets: EventTarget[] = []
   #compositor?: NativeSurfaceCompositor
+  #textureStream?: MediaStream
   #stopCompositorObserver?: () => void
   #controlCleanups = new Set<() => void>()
   #lastLayout?: NativeSurfacePosition
@@ -174,6 +189,11 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
   #destroyed = false
   #volume = 1
   #muted = false
+  #videoFit: VideoFitMode = 'fit'
+  #videoZoom = 1
+  readonly #originalObjectFit: string
+  readonly #originalTransform: string
+  readonly #originalTransformOrigin: string
   #removeAbortListener?: () => void
   readonly #sessionKey = globalThis.crypto?.randomUUID?.()
     ?? `native-${Date.now()}-${++nativeSurfaceSequence}`
@@ -188,6 +208,9 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
       ? Math.min(1, Math.max(0, initialVolume))
       : 1
     this.#muted = Boolean(element.muted)
+    this.#originalObjectFit = element.style.objectFit
+    this.#originalTransform = element.style.transform
+    this.#originalTransformOrigin = element.style.transformOrigin
     this.#requestedPlaying = options.autoplay ?? false
   }
 
@@ -230,10 +253,23 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     this.#claimMediaElement()
     this.#claimCssSurface()
     if (this.#options.controlRegions) this.registerControls(this.#options.controlRegions)
+    let textureStream: Promise<MediaStream> | undefined
+    if (nativePlatform() === 'windows') {
+      const api = webView2TextureStream()
+      if (!api) {
+        throw new Error('This WebView2 runtime does not expose GPU texture streams')
+      }
+      const streamId = await invoke<string>(`${COMMAND}native_prepare_texture_stream`, {
+        sessionKey: this.#sessionKey,
+      })
+      textureStream = api.getTextureStream(streamId)
+    }
     this.element.style.visibility = 'hidden'
     const source = typeof this.#options.source === 'string'
       ? { uri: this.#options.source }
       : this.#options.source
+    const requestedAutoplay = this.#options.autoplay ?? false
+    const textureBootstrap = textureStream !== undefined && !requestedAutoplay
     const { layout, frame } = this.#measureLayout()
     this.#lastLayout = layout
     try {
@@ -244,8 +280,8 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
           sessionKey: this.#sessionKey,
           ...source,
           ...layout,
-          autoplay: this.#options.autoplay ?? false,
-          volume: this.#volume,
+          autoplay: textureStream !== undefined || requestedAutoplay,
+          volume: textureBootstrap ? 0 : this.#volume,
           muted: this.#muted,
           ...nativeOpenSettings(this.#options),
         },
@@ -264,6 +300,33 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
       }).catch(() => undefined)
       throw new DOMException('native video controller was superseded', 'AbortError')
     }
+    if (textureStream) {
+      this.#textureStream = await textureStream
+      this.element.srcObject = this.#textureStream
+      this.element.autoplay = true
+      this.element.playsInline = true
+      this.#applyWindowsVideoGeometry()
+      this.element.style.visibility = 'visible'
+      // The MediaStream has no audio; GStreamer owns audio and playback state.
+      // A rejected browser autoplay promise must not tear down the native
+      // session during a React source replacement.
+      this.#playWindowsTextureStream()
+      if (textureBootstrap) {
+        // TextureStream becomes available as soon as its pool exists. Give the
+        // playing pipeline enough time to replace the black preroll before
+        // honoring an initially paused controller, without polling the bus and
+        // triggering its buffering pause policy during bootstrap.
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        this.#snapshot = await this.#control('pause')
+        this.#snapshot = await this.#control(
+          'seek',
+          typeof this.#options.source === 'string'
+            ? 0
+            : this.#options.source.startPositionSeconds ?? 0,
+        )
+        this.#snapshot = await this.#control('volume', this.#muted ? 0 : this.#volume)
+      }
+    }
     // Keep the WebView aperture closed until the native host confirms that its
     // surface is in place. Publishing first exposes a frame of the native base
     // whenever GTK and WebKit commit scroll/resize frames at different times.
@@ -278,21 +341,23 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
       this.element.dispatchEvent(new Event('play'))
       this.element.dispatchEvent(new Event('playing'))
     }
-    this.#resize = new ResizeObserver(() => this.#requestLayout())
-    this.#resize.observe(this.element)
-    this.#stopCompositorObserver = this.#compositor?.observe((backgroundChanged) => {
-      if (backgroundChanged) this.#compositor?.refresh()
+    if (nativePlatform() !== 'windows') {
+      this.#resize = new ResizeObserver(() => this.#requestLayout())
+      this.#resize.observe(this.element)
+      this.#stopCompositorObserver = this.#compositor?.observe((backgroundChanged) => {
+        if (backgroundChanged) this.#compositor?.refresh()
+        this.#requestLayout()
+      })
+      this.#scrollTargets = nativeScrollTargets(this.element)
+      for (const target of this.#scrollTargets) {
+        target.addEventListener('scroll', this.#handleViewportChange, { capture: true, passive: true })
+      }
+      window.addEventListener('wheel', this.#handleViewportChange, { capture: true, passive: true })
+      window.addEventListener('resize', this.#handleViewportChange, { passive: true })
+      window.visualViewport?.addEventListener('scroll', this.#handleViewportChange, { passive: true })
+      window.visualViewport?.addEventListener('resize', this.#handleViewportChange, { passive: true })
       this.#requestLayout()
-    })
-    this.#scrollTargets = nativeScrollTargets(this.element)
-    for (const target of this.#scrollTargets) {
-      target.addEventListener('scroll', this.#handleViewportChange, { capture: true, passive: true })
     }
-    window.addEventListener('wheel', this.#handleViewportChange, { capture: true, passive: true })
-    window.addEventListener('resize', this.#handleViewportChange, { passive: true })
-    window.visualViewport?.addEventListener('scroll', this.#handleViewportChange, { passive: true })
-    window.visualViewport?.addEventListener('resize', this.#handleViewportChange, { passive: true })
-    this.#requestLayout()
     this.#startPolling()
     if (this.#options.suspendWhenHidden ?? true) {
       this.#visibilityObserver = new IntersectionObserver(([entry]) => {
@@ -309,6 +374,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
 
   async play(): Promise<void> {
     this.#requestedPlaying = true
+    this.#playWindowsTextureStream()
     if (this.#suspendedForVisibility) {
       this.element.dispatchEvent(new Event('play'))
       return
@@ -458,6 +524,8 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
       })
     }
     this.#acceptSnapshot(await this.#control(mode === 'cover' ? 'crop' : mode))
+    this.#videoFit = mode
+    this.#applyWindowsVideoGeometry()
   }
 
   async setVideoZoom(scale: number): Promise<void> {
@@ -471,6 +539,8 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     }
     const clamped = Math.min(2, Math.max(1, scale))
     this.#acceptSnapshot(await this.#control('zoom', clamped))
+    this.#videoZoom = clamped
+    this.#applyWindowsVideoGeometry()
   }
 
   registerControls(target: VideoControlsTarget): () => void {
@@ -508,6 +578,9 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     window.visualViewport?.removeEventListener('scroll', this.#handleViewportChange)
     window.visualViewport?.removeEventListener('resize', this.#handleViewportChange)
     for (const cleanup of [...this.#controlCleanups]) cleanup()
+    for (const track of this.#textureStream?.getTracks() ?? []) track.stop()
+    this.#textureStream = undefined
+    this.element.srcObject = null
     await invoke(`${COMMAND}native_close`, {
       payload: { sessionKey: this.#sessionKey },
     }).catch(() => undefined)
@@ -517,6 +590,9 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
       this.element.volume = this.#volume
       this.element.muted = this.#muted
       this.element.style.removeProperty('visibility')
+      this.element.style.objectFit = this.#originalObjectFit
+      this.element.style.transform = this.#originalTransform
+      this.element.style.transformOrigin = this.#originalTransformOrigin
     }
     this.#releaseCssSurface()
   }
@@ -751,8 +827,22 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
   }
 
   #claimCssSurface(): void {
-    if (this.#options.surfaceMode === 'transparent-canvas') return
+    if (nativePlatform() === 'windows' || this.#options.surfaceMode === 'transparent-canvas') return
     this.#compositor = new NativeSurfaceCompositor(this.#sessionKey, this.element)
+  }
+
+  #applyWindowsVideoGeometry(): void {
+    if (nativePlatform() !== 'windows') return
+    this.element.style.objectFit = this.#videoFit === 'fit'
+      ? 'contain'
+      : this.#videoFit === 'cover' ? 'cover' : 'fill'
+    this.element.style.transformOrigin = 'center'
+    this.element.style.transform = this.#videoZoom === 1 ? 'none' : `scale(${this.#videoZoom})`
+  }
+
+  #playWindowsTextureStream(): void {
+    if (!this.#textureStream) return
+    void HTMLMediaElement.prototype.play.call(this.element).catch(() => undefined)
   }
 
   #claimMediaElement(): void {
@@ -863,7 +953,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
   }
 
   #requestLayout(): void {
-    if (this.#destroyed) return
+    if (this.#destroyed || nativePlatform() === 'windows') return
     this.#layoutDirty = true
     if (this.#layoutFrame !== undefined || this.#layoutInFlight) return
     this.#layoutFrame = requestAnimationFrame(() => {

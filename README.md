@@ -23,10 +23,10 @@ the Tauri backend installed. The DOM still owns layout, controls, and overlays.
 | macOS | Not supported | — | — |
 | iOS | Not supported | — | — |
 
-Linux and Android present directly into native surfaces. Windows keeps decoded
-frames in D3D11 and presents them through a DirectComposition visual attached
-to the Tauri HWND. The WebView stays above that visual in the same OS window,
-so controls, tooltips, resize, and Snap Layouts remain atomic.
+Linux and Android present directly into native surfaces. Windows passes pooled
+D3D11 textures through WebView2 TextureStream to the real HTML `<video>`, so
+video, controls, tooltips, resize, scrolling, and Snap Layouts share Chromium's
+compositor without decoded-frame IPC.
 Containers, codecs, DRM, HDR, and UHD limits depend on the selected engine and
 target hardware.
 
@@ -96,7 +96,8 @@ All `@get-air/video` integrations can use the installed Tauri backend:
 
 Keep importing the framework helpers from `@get-air/video/*`; only the client
 or Effect layer comes from the Tauri adapter. Canvas, SolidTV, and Blits also
-need the transparent aperture shown in the [examples](examples).
+need the transparent aperture shown in the [examples](examples) on Linux and
+Android; Windows TextureStream remains ordinary DOM video.
 
 ## Compatibility
 

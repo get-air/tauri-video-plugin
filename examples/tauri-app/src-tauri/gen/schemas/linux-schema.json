@@ -2193,10 +2193,10 @@
           "markdownDescription": "Denies the unminimize command without any pre-configured scope."
         },
         {
-          "description": "Verify, open, and control the native video player, update its layout, and read playback statistics\n#### This default permission set includes:\n\n- `allow-native-diagnostics`\n- `allow-native-open`\n- `allow-native-control`\n- `allow-native-layout`\n- `allow-native-stats`\n- `allow-native-close`",
+          "description": "Verify, open, and control the native video player, update its layout, and read playback statistics\n#### This default permission set includes:\n\n- `allow-native-diagnostics`\n- `allow-native-open`\n- `allow-native-prepare-texture-stream`\n- `allow-native-control`\n- `allow-native-layout`\n- `allow-native-stats`\n- `allow-native-close`",
           "type": "string",
           "const": "video:default",
-          "markdownDescription": "Verify, open, and control the native video player, update its layout, and read playback statistics\n#### This default permission set includes:\n\n- `allow-native-diagnostics`\n- `allow-native-open`\n- `allow-native-control`\n- `allow-native-layout`\n- `allow-native-stats`\n- `allow-native-close`"
+          "markdownDescription": "Verify, open, and control the native video player, update its layout, and read playback statistics\n#### This default permission set includes:\n\n- `allow-native-diagnostics`\n- `allow-native-open`\n- `allow-native-prepare-texture-stream`\n- `allow-native-control`\n- `allow-native-layout`\n- `allow-native-stats`\n- `allow-native-close`"
         },
         {
           "description": "Enables the native_close command without any pre-configured scope.",
@@ -2227,6 +2227,12 @@
           "type": "string",
           "const": "video:allow-native-open",
           "markdownDescription": "Enables the native_open command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the native_prepare_texture_stream command without any pre-configured scope.",
+          "type": "string",
+          "const": "video:allow-native-prepare-texture-stream",
+          "markdownDescription": "Enables the native_prepare_texture_stream command without any pre-configured scope."
         },
         {
           "description": "Enables the native_stats command without any pre-configured scope.",
@@ -2263,6 +2269,12 @@
           "type": "string",
           "const": "video:deny-native-open",
           "markdownDescription": "Denies the native_open command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the native_prepare_texture_stream command without any pre-configured scope.",
+          "type": "string",
+          "const": "video:deny-native-prepare-texture-stream",
+          "markdownDescription": "Denies the native_prepare_texture_stream command without any pre-configured scope."
         },
         {
           "description": "Denies the native_stats command without any pre-configured scope.",

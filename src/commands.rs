@@ -23,6 +23,29 @@ pub(crate) async fn native_open<R: Runtime>(
     }
 }
 
+#[command]
+#[allow(non_snake_case)]
+pub(crate) async fn native_prepare_texture_stream<R: Runtime>(
+    app: AppHandle<R>,
+    sessionKey: String,
+) -> Result<String> {
+    #[cfg(windows)]
+    {
+        let stream_id = format!("air-video-{sessionKey}");
+        app.video()
+            .desktop()
+            .prepare_texture_stream(stream_id.clone())?;
+        Ok(stream_id)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, sessionKey);
+        Err(Error::InvalidRequest(
+            "WebView2 texture streams are available only on Windows".into(),
+        ))
+    }
+}
+
 fn require_native_protocol(actual: Option<u32>, package_version: Option<&str>) -> Result<()> {
     let package_version = package_version.filter(|version| !version.trim().is_empty());
     if actual == Some(VIDEO_PLUGIN_PROTOCOL_VERSION) && package_version.is_some() {

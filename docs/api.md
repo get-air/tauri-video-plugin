@@ -246,13 +246,13 @@ implementation.
 
 ## Native layout and controls
 
-The common controller's `<video>` element is the geometry anchor. Linux,
-Android, and Windows place native surfaces at its visible CSS rectangle and
-commit matching WebView apertures. Windows attaches a D3D11 DirectComposition
-visual to the same Tauri HWND underneath WebView2, so DOM overlays stay above
-video without a second top-level window or decoded pixels crossing IPC. The
-plugin selects WebView2 Window-to-Visual hosting automatically; applications do
-not need transparent Tauri windows or special window configuration.
+The common controller's `<video>` element is the geometry anchor. Linux and
+Android place native surfaces at its visible CSS rectangle and commit matching
+WebView apertures. Windows exposes GStreamer D3D11 frames as a WebView2
+TextureStream on the real `<video>` element. Windows layout, overlays, clipping,
+scrolling, and transforms are consequently ordinary DOM composition and do not
+cross native layout IPC. Applications do not need transparent Tauri windows or
+special window configuration.
 
 Register intentional overlay UI through any common mechanism:
 

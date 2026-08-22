@@ -8,23 +8,25 @@ Android has two explicitly selectable direct native rendering paths: Media3/Medi
 
 No test downloaded a complete file before playback, converted video in JavaScript, or passed decoded frames through canvas. The final regression was emulator-only. No physical device was used after the user requested emulator-only testing.
 
-Windows 11 VM qualification now covers the single-window D3D11/
-DirectComposition presenter. A generated 3840×2160 H.264 source ran at 59 FPS
-with zero reported drops, and a 1920×818 MKV ran at its native 23.97 FPS with
-zero reported drops. Physical ARM hardware remains outside this report.
+Windows 11 VM qualification now covers D3D11 WebView2 TextureStream. Native
+frames render on the real HTML video element with correct pixels and zero
+decoded-frame IPC copies. MP4 playback sustained its native 24 FPS with zero
+reported drops. The VM's Microsoft Basic Render Driver has neither hardware
+decode nor a D3D11 video processor, so physical-GPU 4K60 remains a release gate.
 
 ## Rendering paths actually measured
 
 | Target | Path | Decoded-frame copies across JS/native boundary |
 | --- | --- | --- |
 | Linux | GStreamer `playbin3` → VA-API → `glsinkbin`/`gtkglsink` | 0 |
-| Windows | GStreamer decoder → `d3d11videosink` → shared D3D11 texture → DirectComposition | 0 |
+| Windows | GStreamer decoder → NV12 `D3D11Memory` → WebView2 TextureStream → HTML video | 0 |
 | Android fast path | Media3 extractor → MediaCodec → `SurfaceView` | 0 |
 | Android explicit LibVLC | LibVLC demux/decode → `VLCVideoLayout`/`SurfaceView` | 0 |
 
 React renders controls and overlays in the WebView. All three native paths keep
-decoded frames outside JavaScript. On Windows, WebView2 and the D3D11 video
-visual share one HWND compositor and one OS window.
+decoded frames outside JavaScript. On Windows, WebView2 consumes the pooled
+D3D11 textures as a `MediaStream`, so video and controls share Chromium's DOM
+compositor.
 
 ## Emulator profiles
 
@@ -33,7 +35,7 @@ visual share one HWND compositor and one OS window.
 | Phone | Android 16 x86_64, 2 cores, 2.5 GiB effective RAM, 1080×1920 | 20/20 HTTPS cases passed |
 | TV | Android 16 TV x86_64, 4 cores, 1.5 GiB RAM, 1920×1080 | 20/20 HTTPS cases passed |
 | Linux | KDE Wayland, GStreamer 1.28.5, VA-API/GL | Existing live UHD demo and integration suite passed |
-| Windows | Windows 11 x86_64 VM, WebView2 151, GStreamer 1.28, Microsoft Basic Render Driver | MP4/WebM/Ogg, 1080p MKV, and software-decoded 4K60 presentation passed |
+| Windows | Windows 11 x86_64 VM, WebView2 151, GStreamer 1.28, Microsoft Basic Render Driver | TextureStream MP4 pixels, controls, source replacement, and 4K60 negotiation passed; hardware cadence unavailable |
 
 The phone profile was deliberately CPU-constrained. Emulator software decoders and Goldfish codecs do not model production ARM MediaCodec performance, so this validates behavior and boundedness rather than physical-chip codec capability.
 
@@ -91,13 +93,14 @@ The Android TV explicit LibVLC soak ran for 20 seconds at 24.43 average presente
 
 The constrained phone MediaCodec soak ran for 15 seconds at 29.75 average presented FPS, 28.43 minimum sampled FPS, 0 dropped frames, 230.0 MiB maximum process PSS, 27.4 MiB maximum encoded allocation, and at least 29 seconds of reserve.
 
-The Windows VM presented a generated 3840×2160 60 FPS H.264 source at
-58.95 measured FPS with 410 presented frames and zero drops at the sample
-point. The VM exposes only Microsoft Basic Render Driver, so GStreamer selected
-`avdec_h264`; total process CPU was about 1.4 cores while software-decoding that
-4K60 stream. This validates presentation cadence and the D3D11 composition
-path, but the sub-one-core target remains a physical-hardware qualification
-gate where `d3d11h264dec` is available.
+The Windows TextureStream run negotiated and displayed 3840×2160 at 60 FPS
+with correct DOM pixel readback and zero decoded-frame IPC copies. GStreamer
+selected `avdec_h264`; Microsoft Basic Render Driver also lacks the D3D11 video
+processor needed for GPU colorspace conversion. Depending on the generated
+source, the fallback delivered roughly 20–44 FPS at 1.1–1.4 CPU cores. This
+validates resolution, format negotiation, GPU texture sharing, and fallback
+behavior—not the hardware 4K60 performance target. That target must be measured
+where `d3d11h264dec` and GPU NV12 conversion are available.
 
 In the full constrained-phone matrix, the hardest LibVLC fixtures incurred one or two drops while still sustaining source cadence. Production 4K HDR/Dolby Vision performance remains an ARM hardware qualification gate; x86 emulator software-decoder results must not be represented as physical TV performance.
 
@@ -108,7 +111,12 @@ In the full constrained-phone matrix, the hardest LibVLC fixtures incurred one o
 - TypeScript declaration checking, Vitest, and npm publish dry-run: passed.
 - Rust tests and Clippy with warnings denied: passed.
 - Windows x86-64 Rust build and Clippy with warnings denied: passed.
-- Windows 4K60 D3D11/DirectComposition pixel and zero-drop check: passed.
+- Windows 4K60 TextureStream negotiation and pixel check: passed; physical-GPU
+  cadence remains required.
+- Windows in-motion resize and scroll capture: 48/48 frames in each run kept
+  video and controls in one compositor surface with no exposed client-area gap.
+- Windows fullscreen and tooltip captures: passed with DOM chrome above the
+  TextureStream video.
 - Android Kotlin compilation with Java 17: passed.
 - Android x86_64 debug APK build/install: passed.
 - Android TV 20-format HTTPS matrix: passed.
@@ -128,8 +136,12 @@ In the full constrained-phone matrix, the hardest LibVLC fixtures incurred one o
 - TV MediaCodec soak: `artifacts/logs/android-tv-hardware-soak-native-soak.json`
 - TV LibVLC soak: `artifacts/logs/android-tv-compatibility-soak-native-soak.json`
 - Constrained phone soak: `artifacts/logs/android-phone-constrained-soak-native-soak.json`
-- Windows D3D11 controls overlay: `artifacts/windows/dcomp-shared-video-color.png`
-- Windows 4K60 controls overlay: `artifacts/windows/dcomp-4k60.png`
+- Windows TextureStream DOM pixels: `artifacts/windows/texture-stream-30s.png`
+- Windows 1.3× zoom and overlay: `artifacts/windows/texture-stream-zoom-1.3.png`
+- Windows resize contact sheet: `artifacts/windows/texture-stream-resize-color-contact-sheet.png`
+- Windows scroll contact sheet: `artifacts/windows/texture-stream-scroll-contact-sheet.png`
+- Windows fullscreen: `artifacts/windows/texture-stream-fullscreen.png`
+- Windows tooltip overlay: `artifacts/windows/texture-stream-tooltip.png`
 
 ## Remaining release gates
 

@@ -82,6 +82,11 @@ impl<R: Runtime> DesktopVideo<R> {
     }
 
     #[cfg(windows)]
+    pub fn prepare_texture_stream(&self, stream_id: String) -> crate::Result<()> {
+        windows::prepare_texture_stream(&self._app, stream_id)
+    }
+
+    #[cfg(windows)]
     pub fn control_native(
         &self,
         payload: NativeControlRequest,

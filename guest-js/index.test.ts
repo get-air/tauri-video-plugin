@@ -40,6 +40,8 @@ interface TestSnapshot {
   playing: boolean
   videoWidth: number
   videoHeight: number
+  presentedFrames: number
+  droppedFrames: number
   hardwareBackend: string
   tracks: Array<{
     id: string
@@ -82,6 +84,19 @@ async function attach(
 beforeEach(() => {
   clearVerifiedTauriVideoProtocolForTesting()
   vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows NT 10.0')
+  Object.defineProperty(globalThis, 'chrome', {
+    configurable: true,
+    value: {
+      webview: {
+        getTextureStream: vi.fn(async () => {
+          const stream = new MediaStream()
+          Object.defineProperty(stream, 'getTracks', { value: () => [] })
+          return stream
+        }),
+      },
+    },
+  })
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
   const gl = {
     ARRAY_BUFFER: 0x8892,
     STATIC_DRAW: 0x88E4,
@@ -126,6 +141,8 @@ beforeEach(() => {
     playing: false,
     videoWidth: 1920,
     videoHeight: 1080,
+    presentedFrames: 1,
+    droppedFrames: 0,
     hardwareBackend: 'gstreamer-d3d11-win32',
     tracks: [
       {
@@ -156,6 +173,7 @@ beforeEach(() => {
       || commandName(command) === 'native_stats') {
       return structuredClone(snapshot)
     }
+    if (commandName(command) === 'native_prepare_texture_stream') return 'air-video-test'
     return undefined
   })
 })
@@ -190,11 +208,21 @@ describe('native controller contract', () => {
     await attach()
     await attach()
 
-    expect(mocks.invoke.mock.calls.map(([command]) => commandName(command)))
+    expect(mocks.invoke.mock.calls
+      .map(([command]) => commandName(command))
+      .filter((command) => command !== 'native_stats'))
       .toEqual([
         'native_diagnostics',
+        'native_prepare_texture_stream',
         'native_open',
+        'native_control',
+        'native_control',
+        'native_control',
+        'native_prepare_texture_stream',
         'native_open',
+        'native_control',
+        'native_control',
+        'native_control',
       ])
     const open = mocks.invoke.mock.calls.find(([command]) => commandName(command) === 'native_open')
     expect((open?.[1] as { payload?: unknown })?.payload).toMatchObject({
@@ -203,7 +231,7 @@ describe('native controller contract', () => {
     })
   })
 
-  it('sends the Windows video aperture and HTML overlay rectangles to native code', async () => {
+  it('keeps Windows TextureStream video in the DOM without a native aperture', async () => {
     const element = document.createElement('video')
     const controls = document.createElement('div')
     document.body.append(element, controls)
@@ -303,7 +331,9 @@ describe('native controller contract', () => {
           crateVersion: '0.1.0',
         }
       }
-      if (commandName(command) === 'native_open') return structuredClone(snapshot)
+      if (commandName(command) === 'native_prepare_texture_stream') return 'air-video-test'
+      if (commandName(command) === 'native_open'
+        || commandName(command) === 'native_control') return structuredClone(snapshot)
       return undefined
     })
     await expect(attach()).resolves.toMatchObject({ sessionId: expect.any(String) })
@@ -391,7 +421,7 @@ describe('native controller contract', () => {
     expect(remove).toHaveBeenCalledWith('abort', abortHandler)
   })
 
-  it('exposes complete Windows DirectComposition geometry without JS frame copies', async () => {
+  it('exposes complete Windows TextureStream geometry without JS frame copies', async () => {
     const controller = await attach()
     expect(controller.capabilities).toMatchObject({ videoFit: true, videoZoom: true })
     mocks.invoke.mockClear()

@@ -77,16 +77,12 @@ impl Builder {
 
     pub fn build<R: Runtime>(self) -> TauriPlugin<R> {
         #[cfg(target_os = "windows")]
-        if std::env::var_os("COREWEBVIEW2_FORCED_HOSTING_MODE").is_none() {
-            std::env::set_var(
-                "COREWEBVIEW2_FORCED_HOSTING_MODE",
-                "COREWEBVIEW2_HOSTING_MODE_WINDOW_TO_VISUAL",
-            );
-        }
+        enable_webview_texture_stream();
         TauriBuilder::new("video")
             .invoke_handler(tauri::generate_handler![
                 commands::native_diagnostics,
                 commands::native_open,
+                commands::native_prepare_texture_stream,
                 commands::native_control,
                 commands::native_layout,
                 commands::native_stats,
@@ -110,6 +106,30 @@ impl Builder {
             })
             .build()
     }
+}
+
+#[cfg(target_os = "windows")]
+fn enable_webview_texture_stream() {
+    const FEATURE: &str = "msWebView2TextureStream";
+    const PREFIX: &str = "--enable-features=";
+    let mut arguments = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+    if arguments.contains(FEATURE) {
+        return;
+    }
+    if let Some(start) = arguments.find(PREFIX) {
+        let value_start = start + PREFIX.len();
+        let value_end = arguments[value_start..]
+            .find(char::is_whitespace)
+            .map_or(arguments.len(), |offset| value_start + offset);
+        arguments.insert_str(value_end, &format!(",{FEATURE}"));
+    } else {
+        if !arguments.is_empty() {
+            arguments.push(' ');
+        }
+        arguments.push_str(PREFIX);
+        arguments.push_str(FEATURE);
+    }
+    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", arguments);
 }
 
 /// Initializes the plugin with production defaults.

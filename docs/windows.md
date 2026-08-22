@@ -1,17 +1,14 @@
 # Windows runtime
 
-Windows playback uses GStreamer `playbin3` with `d3d11videosink`. The sink draws
-onto a keyed shared D3D11 texture, and a DirectComposition flip-model swapchain
-presents that texture under WebView2 on the existing Tauri HWND. Decoded pixels
-never cross Tauri IPC or JavaScript. There is no second native video HWND,
-popup tool window, base64 serialization, localhost frame bridge, canvas, or
-WebGL upload.
+Windows playback uses GStreamer `playbin3` and WebView2 TextureStream. The
+plugin creates a D3D11 device on WebView2's render adapter, negotiates NV12
+`D3D11Memory`, and presents a pool of reusable GPU textures as a `MediaStream`
+on the application's real HTML `<video>` element.
 
-The result is one ordinary top-level Tauri window. WebView2 uses its
-Window-to-Visual hosting mode, with a CSS aperture over the video visual.
-Controls, tooltips, and arbitrary HTML remain in the WebView visual above the
-video, while Windows owns dragging, live resize, maximize, fullscreen, and Snap
-Layouts atomically.
+Video, controls, tooltips, clipping, scrolling, transforms, fullscreen, and
+Snap Layouts therefore belong to the same Chromium compositor. Windows has no
+second video HWND, transparent aperture, native overlay window, decoded-frame
+IPC, canvas, or WebGL upload.
 
 ## Development runtime
 
@@ -31,21 +28,26 @@ tauri-plugin-video = { version = "0.3" }
 on Windows. Explicit `'gstreamer'` selects the same engine. mpv is not compiled
 or selected there.
 
-The D3D11 presenter supports `fit`, crop-to-cover, `stretch`, and zoom without
-moving decoded pixels through the CPU. Crop-to-cover is negotiated by
-GStreamer's `aspectratiocrop`; zoom is a DirectComposition transform.
+TextureStream is currently a WebView2 experimental API. The plugin enables its
+`msWebView2TextureStream` browser feature before WebView2 starts and verifies
+the COM and JavaScript interfaces before opening playback. Applications should
+qualify and pin a WebView2 Fixed Version Runtime for deterministic deployment.
 
 ## Decode and presentation
 
-With a GStreamer D3D11 decoder, decode output remains in `D3D11Memory` through
-presentation. `d3d11videosink` renders into the plugin's shared texture and the
-presenter issues one GPU `CopyResource` into the composition swapchain. There
-is no decoded-frame readback, CPU copy, IPC transfer, or WebView texture upload.
+On hardware that exposes GStreamer's D3D11 decoder and video processor, decode,
+NV12 conversion, and presentation stay in GPU memory. Each frame performs one
+NV12 GPU resource copy into a WebView2-owned pooled texture. There is no decoded
+frame readback, CPU pixel copy, or JavaScript binary transfer.
 
-Software decoders such as `avdec_h264`, `vp8dec`, or `theoradec` remain valid;
-GStreamer uploads their output at the D3D11 sink boundary. Runtime telemetry
-names the decoder that was actually selected rather than claiming hardware
-acceleration unconditionally. `decodedFrameCopies` is zero because no decoded
+Software decoders such as `avdec_h264`, `vp8dec`, and `theoradec` remain valid.
+Their output is converted to NV12 and uploaded once at the D3D11 boundary. This
+fallback is intentionally slower than the hardware path; runtime telemetry
+names the decoder actually selected instead of claiming acceleration.
+
+The HTML video element handles `fit`, crop-to-cover, `stretch`, and zoom with
+normal CSS geometry. Resizing and scrolling do not invoke native layout code or
+resize decoded textures. `decodedFrameCopies` remains zero because no decoded
 frame crosses the JavaScript/native boundary.
 
 The Windows backend uses the same

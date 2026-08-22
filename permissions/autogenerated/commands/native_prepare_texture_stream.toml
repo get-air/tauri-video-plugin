@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-native-prepare-texture-stream"
+description = "Enables the native_prepare_texture_stream command without any pre-configured scope."
+commands.allow = ["native_prepare_texture_stream"]
+
+[[permission]]
+identifier = "deny-native-prepare-texture-stream"
+description = "Denies the native_prepare_texture_stream command without any pre-configured scope."
+commands.deny = ["native_prepare_texture_stream"]
