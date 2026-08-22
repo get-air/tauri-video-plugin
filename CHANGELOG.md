@@ -14,6 +14,8 @@ Release numbering follows the
   with a GPU-resident NV12 path and software-decoder upload fallback.
 - Add Windows pixel checks for playback, seek, pause/resume, zoomed overlays,
   tooltips, resize, fullscreen, and Snap Layouts.
+- Rebuild the linked guest adapter before the example starts or bundles, and
+  show the underlying native startup cause when attachment fails.
 
 ## 0.3.0
 

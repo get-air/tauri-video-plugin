@@ -22,6 +22,8 @@ import {
 } from '@get-air/video'
 import type { NativeVideoBackend, VideoClient } from '@get-air/video-tauri'
 
+import { errorMessage } from './error-message'
+
 export interface PlayerTelemetry {
   currentTime: number
   duration: number
@@ -179,7 +181,7 @@ export function NativeMediaPlayer({
       } catch (reason) {
         if (!cancelled && !abort.signal.aborted) {
           const next = reason instanceof Error ? reason : new Error(String(reason))
-          setError(next.message)
+          setError(errorMessage(next))
           setLoading(false)
           onError(next)
         }

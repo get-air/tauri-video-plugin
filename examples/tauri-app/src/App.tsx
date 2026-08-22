@@ -9,6 +9,7 @@ import {
 } from '@get-air/video-tauri'
 
 import { NativeMediaPlayer, type PlayerTelemetry } from './NativeMediaPlayer'
+import { errorMessage } from './error-message'
 import { DEFAULT_SOURCE, DEMO_SOURCES, type DemoSource } from './samples'
 
 const params = new URLSearchParams(window.location.search)
@@ -170,7 +171,7 @@ export default function App() {
           reloadKey={reloadKey}
           autoPlay
           onController={expose}
-          onError={(reason) => setError(reason.message)}
+          onError={(reason) => setError(errorMessage(reason))}
           options={playerOptions}
         >
           <div className="tv-overlay"><img src="/overlay-badge.svg" alt="" /> HTML overlay</div>
@@ -236,7 +237,7 @@ export default function App() {
             onController={expose}
             onBackendResolved={setActiveBackend}
             onTelemetry={setTelemetry}
-            onError={(reason) => setError(reason.message)}
+            onError={(reason) => setError(errorMessage(reason))}
           />
 
           <form className="source-form" onSubmit={open}>
