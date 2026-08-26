@@ -65,6 +65,7 @@ libc = { version = "0.2", optional = true }
 libmpv2 = { version = "5.0.3", default-features = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
+tauri = { version = "2.11.5", default-features = false, features = ["wry"] }
 gio = { version = "0.22", optional = true }
 gstreamer = { version = "0.25.3", optional = true }
 gstreamer-app = { version = "0.25.2", optional = true }
