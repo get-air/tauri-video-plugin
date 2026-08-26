@@ -60,6 +60,7 @@
     "README.md"
   ],
   "scripts": {
+    "prepare": "npm run build",
     "build": "tsx scripts/build.ts",
     "ci": "npm run check && npm run build && npm pack --dry-run --ignore-scripts",
     "ci:act": "act push --job guest-api",
