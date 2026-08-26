@@ -18,7 +18,6 @@ const config: RollupOptions = {
     index: 'adapter/index.ts',
     native: 'adapter/native.ts',
     effect: 'adapter/effect.ts',
-    framework: 'adapter/framework.ts',
   },
   output: {
     dir: 'dist-js',

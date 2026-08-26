@@ -2,7 +2,7 @@
 
 `@get-air/video-tauri` adds native Tauri playback to the platform-neutral
 [`@get-air/video`](https://github.com/get-air/video) API. The common package
-owns `VideoController`, backend fallback, subtitles, React/SolidTV/Blits
+owns `VideoController`, backend fallback, subtitles, React/Blits
 integrations, and DOM backends. This package owns only the
 `tauri` adapter and its native settings.
 
@@ -39,23 +39,6 @@ const player = await client.attach(video, {
 
 Client defaults and per-attachment settings are merged. Per-attachment settings
 win.
-
-## Air framework `<video>`
-
-Install the Tauri driver once in the platform shell before mounting an Air
-framework app:
-
-```ts
-import { installTauriFrameworkVideo } from '@get-air/video-tauri/framework'
-
-const restoreVideoDriver = installTauriFrameworkVideo({
-  playback: { engine: 'gstreamer' },
-})
-```
-
-After installation, literal framework `<video>` elements select the `tauri`
-backend while browser shells retain the core HTML driver. The returned cleanup
-is idempotent and restores the previous framework driver.
 
 ## Native protocol compatibility
 
@@ -225,8 +208,7 @@ const player = await attachCanvasVideo({
 })
 ```
 
-`VideoPlayer`, `TvVideoPlayer`, `attachCanvasVideo`, and the
-SolidTV adapter all accept the same client.
+`VideoPlayer`, `TvVideoPlayer`, and `attachCanvasVideo` all accept the same client.
 
 ## Effect layer
 

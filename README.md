@@ -90,18 +90,6 @@ await player.play()
 Omit `engine` to use the platform default: Media3 on Android and GStreamer on
 desktop builds that include it.
 
-For an Air framework app, install the native driver before `createApp()`. The
-framework's literal `<video>` intrinsic will then use native playback instead
-of the browser backend:
-
-```ts
-import { installTauriFrameworkVideo } from '@get-air/video-tauri/framework'
-
-const restoreVideoDriver = installTauriFrameworkVideo()
-// Mount the Air app, which can now render <video src={movieUrl} />.
-// Call restoreVideoDriver() when the Tauri shell is disposed.
-```
-
 ## Core integrations
 
 All `@get-air/video` integrations can use the installed Tauri backend:
@@ -110,13 +98,12 @@ All `@get-air/video` integrations can use the installed Tauri backend:
 | --- | --- |
 | Promise API | `createTauriVideoClient()` |
 | Effect | `layerTauriVideoBackend()` from `@get-air/video-tauri/effect` |
-| Air framework `<video>` | `installTauriFrameworkVideo()` from `@get-air/video-tauri/framework` |
 | React / TV focus | `client` prop |
 | Canvas | `client` option |
 | Blits | `client` option |
 
-Keep importing the framework helpers from `@get-air/video/*`; only the client,
-framework driver, or Effect layer comes from the Tauri adapter. Canvas and Blits also
+Keep importing shared helpers from `@get-air/video/*`; only the client or
+Effect layer comes from the Tauri adapter. Canvas and Blits also
 need the transparent aperture shown in the [examples](examples) on Linux and
 Android; Windows TextureStream remains ordinary DOM video.
 

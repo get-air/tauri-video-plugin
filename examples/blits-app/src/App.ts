@@ -46,7 +46,7 @@ export default Blits.Application({
 
       <Element x="72" y="48" w="10" h="52" color="#55e6c1ff" rounded="5" />
       <Text x="104" y="46" size="42" color="#f4f7fbff" content="NATIVE SIGNAL" />
-      <Text x="105" y="96" size="20" color="#8393a7ff" content="SOLID-TV / BLITS APERTURE DEMO" />
+      <Text x="105" y="96" size="20" color="#8393a7ff" content="BLITS APERTURE DEMO" />
       <Element x="1570" y="54" w="278" h="54" color="#112339ff" rounded="27" />
       <Element x="1592" y="73" w="16" h="16" color="#55e6c1ff" rounded="8" />
       <Text x="1622" y="66" size="22" color="#dce7f4ff" content="NATIVE SURFACE" />

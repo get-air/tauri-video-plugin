@@ -12,6 +12,7 @@ pub struct NativePluginDiagnostics {
     pub protocol_version: u32,
     pub crate_name: String,
     pub crate_version: String,
+    pub platform: String,
 }
 
 impl NativePluginDiagnostics {
@@ -20,6 +21,7 @@ impl NativePluginDiagnostics {
             protocol_version: VIDEO_PLUGIN_PROTOCOL_VERSION,
             crate_name: env!("CARGO_PKG_NAME").to_owned(),
             crate_version: env!("CARGO_PKG_VERSION").to_owned(),
+            platform: std::env::consts::OS.to_owned(),
         }
     }
 }

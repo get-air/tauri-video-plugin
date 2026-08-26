@@ -129,6 +129,7 @@ mod tests {
         assert_eq!(diagnostics.protocol_version, VIDEO_PLUGIN_PROTOCOL_VERSION);
         assert_eq!(diagnostics.crate_name, env!("CARGO_PKG_NAME"));
         assert_eq!(diagnostics.crate_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(diagnostics.platform, std::env::consts::OS);
     }
 
     #[test]

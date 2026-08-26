@@ -19,8 +19,7 @@ Release numbering follows the
 
 ## 0.4.0
 
-- Add `@get-air/video-tauri/framework` with explicit installation for the Air
-  framework's literal `<video>` intrinsic.
+- Add the now-retired renderer adapter.
 - Open the `@get-air/video` peer compatibility line to `>=0.3.0 <0.4.0` and
   test against exact core `0.3.0`.
 

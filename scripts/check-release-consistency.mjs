@@ -177,8 +177,9 @@ if (rootCargoPackages.length !== 1) {
 const lockRoot = packageLock.packages?.['']
 const packagePeerRange = packageJson.peerDependencies?.[corePackageName]
 const lockPeerRange = lockRoot?.peerDependencies?.[corePackageName]
-const packageDevVersion = packageJson.devDependencies?.[corePackageName]
-const lockDevVersion = lockRoot?.devDependencies?.[corePackageName]
+const packageDevSpecifier = packageJson.devDependencies?.[corePackageName]
+const lockDevSpecifier = lockRoot?.devDependencies?.[corePackageName]
+const installedCoreVersion = packageLock.packages?.[`node_modules/${corePackageName}`]?.version
 
 const linkedManifestFields = [
   'name',
@@ -194,10 +195,10 @@ const checkNpmExample = (label, manifest, lock) => {
   const rootEntry = lock.packages?.['']
   const linkedAdapter = lock.packages?.['../..']
   const adapterLink = lock.packages?.['node_modules/@get-air/video-tauri']
-  const expectedCoreRange = `^${packageDevVersion}`
+  const expectedCoreSpecifier = packageDevSpecifier
 
-  if (manifest.dependencies?.[corePackageName] !== expectedCoreRange) {
-    errors.push(`${label}/package.json must depend on ${corePackageName} ${expectedCoreRange}`)
+  if (manifest.dependencies?.[corePackageName] !== expectedCoreSpecifier) {
+    errors.push(`${label}/package.json must depend on ${corePackageName} ${expectedCoreSpecifier}`)
   }
   for (const dependency of [corePackageName, '@get-air/video-tauri']) {
     if (rootEntry?.dependencies?.[dependency] !== manifest.dependencies?.[dependency]) {
@@ -207,8 +208,8 @@ const checkNpmExample = (label, manifest, lock) => {
   if (adapterLink?.link !== true || adapterLink?.resolved !== '../..') {
     errors.push(`${label}/package-lock.json does not link @get-air/video-tauri to ../..`)
   }
-  if (lock.packages?.[`node_modules/${corePackageName}`]?.version !== packageDevVersion) {
-    errors.push(`${label}/package-lock.json does not install tested core ${packageDevVersion}`)
+  if (lock.packages?.[`node_modules/${corePackageName}`]?.version !== installedCoreVersion) {
+    errors.push(`${label}/package-lock.json does not install tested core ${installedCoreVersion}`)
   }
   for (const field of linkedManifestFields) {
     if (stableJson(linkedAdapter?.[field]) !== stableJson(packageJson[field])) {
@@ -250,11 +251,12 @@ if (packageJson.peerDependenciesMeta?.[corePackageName]?.optional === true) {
 if (lockRoot?.peerDependenciesMeta?.[corePackageName]?.optional === true) {
   errors.push(`${corePackageName} must not be an optional peer in package-lock.json`)
 }
-if (lockDevVersion !== packageDevVersion) {
-  errors.push(`package-lock.json dev version ${lockDevVersion} does not match package.json dev version ${packageDevVersion}`)
+if (lockDevSpecifier !== packageDevSpecifier) {
+  errors.push(`package-lock.json dev specifier ${lockDevSpecifier} does not match package.json dev specifier ${packageDevSpecifier}`)
 }
-if (packageLock.packages?.[`node_modules/${corePackageName}`]?.version !== packageDevVersion) {
-  errors.push(`package-lock.json installed ${corePackageName} version does not match the exact devDependency ${packageDevVersion}`)
+if (typeof packageDevSpecifier !== 'string'
+  || !/^git\+https:\/\/github\.com\/get-air\/video\.git#[0-9a-f]{40}$/.test(packageDevSpecifier)) {
+  errors.push(`${corePackageName} devDependency must pin one full Git commit, found ${packageDevSpecifier}`)
 }
 
 let peerLower
@@ -274,15 +276,15 @@ if (typeof packagePeerRange === 'string') {
   }
 }
 
-const parsedDevVersion = parseSemver(packageDevVersion)
-if (parsedDevVersion === undefined) {
-  errors.push(`${corePackageName} devDependency must be one exact SemVer version, found ${packageDevVersion}`)
+const parsedInstalledCoreVersion = parseSemver(installedCoreVersion)
+if (parsedInstalledCoreVersion === undefined) {
+  errors.push(`${corePackageName} lock entry must expose a valid package version, found ${installedCoreVersion}`)
 } else if (
   peerLower !== undefined
   && peerUpper !== undefined
-  && (compareSemver(parsedDevVersion, peerLower) < 0 || compareSemver(parsedDevVersion, peerUpper) >= 0)
+  && (compareSemver(parsedInstalledCoreVersion, peerLower) < 0 || compareSemver(parsedInstalledCoreVersion, peerUpper) >= 0)
 ) {
-  errors.push(`${corePackageName} devDependency ${packageDevVersion} is outside peer range ${packagePeerRange}`)
+  errors.push(`${corePackageName} tested version ${installedCoreVersion} is outside peer range ${packagePeerRange}`)
 }
 
 const protocolPackageVersion = protocol.match(
