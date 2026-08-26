@@ -16,7 +16,9 @@ const manifest = JSON.parse(
 const config: RollupOptions = {
   input: {
     index: 'adapter/index.ts',
+    native: 'adapter/native.ts',
     effect: 'adapter/effect.ts',
+    framework: 'adapter/framework.ts',
   },
   output: {
     dir: 'dist-js',
@@ -31,9 +33,12 @@ const config: RollupOptions = {
       include: [
         'adapter/**/*.ts',
         'guest-js/index.ts',
+        'guest-js/models.ts',
         'guest-js/protocol.ts',
         'guest-js/protocol-error.ts',
+        'guest-js/runtime-errors.ts',
         'guest-js/native-surface-layout.ts',
+        'guest-js/native-surface-geometry.ts',
         'guest-js/native-surface-compositor.ts',
       ],
       exclude: ['**/*.test.ts'],

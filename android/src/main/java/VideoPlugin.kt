@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.PixelFormat
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -14,6 +15,7 @@ import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
+import android.view.SurfaceView
 import android.view.WindowManager
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -123,31 +125,67 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             unregisterNativeScrollSynchronizer()
             hostWebView = webView
             registerNativeScrollSynchronizerIfNeeded()
-            val nativeContainer = FrameLayout(activity).apply {
-                setBackgroundColor(Color.BLACK)
-                visibility = View.GONE
-            }
-            val playerView = PlayerView(activity).apply {
-                useController = false
-                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                setShutterBackgroundColor(Color.BLACK)
-                val uiType = resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK
-                subtitleView?.setBottomPaddingFraction(
-                    if (uiType == Configuration.UI_MODE_TYPE_TELEVISION) 0.24f else 0.16f
-                )
-            }
-            val vlcLayout = VLCVideoLayout(activity).apply { visibility = View.GONE }
-            val match = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT,
+            ensureNativeSurfaceHost()
+        }
+    }
+
+    /**
+     * Create the native playback plane independently of Android WebView setup.
+     *
+     * Wry calls [load] with its WebView and keeps the existing scroll
+     * synchronizer. Blitz registers the plugin with a null WebView, so the
+     * first open lazily creates the same Media3/VLC plane beneath the native
+     * renderer surface.
+     */
+    private fun ensureNativeSurfaceHost() {
+        if (nativeRoot != null && nativeView != null && vlcView != null) return
+        val nativeContainer = FrameLayout(activity).apply {
+            setBackgroundColor(Color.BLACK)
+            visibility = View.GONE
+        }
+        val playerView = PlayerView(activity).apply {
+            useController = false
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+            setShutterBackgroundColor(Color.BLACK)
+            val uiType = resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK
+            subtitleView?.setBottomPaddingFraction(
+                if (uiType == Configuration.UI_MODE_TYPE_TELEVISION) 0.24f else 0.16f
             )
-            nativeContainer.addView(playerView, match)
-            nativeContainer.addView(vlcLayout, match)
-            val root = activity.findViewById<ViewGroup>(android.R.id.content)
-            root.addView(nativeContainer, 0, FrameLayout.LayoutParams(1, 1))
-            nativeRoot = nativeContainer
-            nativeView = playerView
-            vlcView = vlcLayout
+        }
+        val vlcLayout = VLCVideoLayout(activity).apply { visibility = View.GONE }
+        val match = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT,
+        )
+        nativeContainer.addView(playerView, match)
+        nativeContainer.addView(vlcLayout, match)
+        val root = activity.findViewById<ViewGroup>(android.R.id.content)
+        // GameActivity and PlayerView both render through SurfaceView. Android
+        // otherwise promotes the video surface above the Blitz canvas and its
+        // controls regardless of normal View z-order. Keep the transparent
+        // Blitz surface in the media-overlay layer and the decoded video in the
+        // base media layer so UI alpha composes over zero-copy playback.
+        rendererSurfaces(root).forEach {
+            if (hostWebView == null) it.holder.setFormat(PixelFormat.RGBA_8888)
+            it.setZOrderMediaOverlay(true)
+        }
+        root.addView(nativeContainer, 0, FrameLayout.LayoutParams(1, 1))
+        rendererSurfaces(nativeContainer).forEach {
+            it.setZOrderOnTop(false)
+            it.setZOrderMediaOverlay(false)
+        }
+        nativeRoot = nativeContainer
+        nativeView = playerView
+        vlcView = vlcLayout
+    }
+
+    private fun rendererSurfaces(root: View): List<SurfaceView> {
+        if (root is SurfaceView) return listOf(root)
+        if (root !is ViewGroup) return emptyList()
+        return buildList {
+            for (index in 0 until root.childCount) {
+                addAll(rendererSurfaces(root.getChildAt(index)))
+            }
         }
     }
 
@@ -156,6 +194,7 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         val args = invoke.parseArgs(NativeOpenArgs::class.java)
         activity.runOnUiThread {
             closeNativePlayer()
+            ensureNativeSurfaceHost()
             activeSessionKey = args.sessionKey
             val generation = openGeneration
             val view = nativeView
@@ -595,6 +634,10 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             put("durationSeconds", snapshot.durationSeconds)
             put("currentTimeSeconds", snapshot.currentTimeSeconds)
             put("bufferedSeconds", snapshot.bufferedSeconds)
+            put("live", snapshot.live)
+            put("seekable", snapshot.seekable)
+            put("seekableStartSeconds", snapshot.seekableStartSeconds)
+            put("seekableEndSeconds", snapshot.seekableEndSeconds)
             put("playing", snapshot.playing)
             put("videoWidth", snapshot.videoWidth)
             put("videoHeight", snapshot.videoHeight)
@@ -751,9 +794,9 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
     private fun syncNativeScrollPosition() {
         if (!nativeLayoutActive) return
         val view = nativeRoot ?: return
-        val webView = hostWebView ?: return
-        val nextX = (nativeDocumentX - webView.scrollX).toFloat()
-        val nextY = (nativeDocumentY - webView.scrollY).toFloat()
+        val webView = hostWebView
+        val nextX = (nativeDocumentX - (webView?.scrollX ?: 0)).toFloat()
+        val nextY = (nativeDocumentY - (webView?.scrollY ?: 0)).toFloat()
         if (view.translationX != nextX) view.translationX = nextX
         if (view.translationY != nextY) view.translationY = nextY
     }
@@ -778,10 +821,20 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
             (counters?.totalVideoFrameProcessingOffsetUs ?: 0L).toDouble() / processingCount
         } else 0.0
         val durationMs = player.duration.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0) ?: 0
+        val live = player.isCurrentMediaItemLive
+        val seekable = player.isCurrentMediaItemSeekable
+        val seekableEndMs = if (durationMs > 0) durationMs else maxOf(
+            player.currentPosition,
+            player.bufferedPosition,
+        ).coerceAtLeast(0)
         return JSObject().apply {
             put("durationSeconds", durationMs / 1000.0)
             put("currentTimeSeconds", player.currentPosition.coerceAtLeast(0) / 1000.0)
             put("bufferedSeconds", player.bufferedPosition.coerceAtLeast(0) / 1000.0)
+            put("live", live)
+            put("seekable", seekable)
+            put("seekableStartSeconds", 0.0)
+            put("seekableEndSeconds", seekableEndMs / 1000.0)
             put("playing", player.isPlaying)
             put("videoWidth", videoSize.width)
             put("videoHeight", videoSize.height)

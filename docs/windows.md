@@ -21,7 +21,7 @@ not set it for the build environment.
 The default crate features already include `gstreamer-runtime`:
 
 ```toml
-tauri-plugin-video = { version = "0.3" }
+tauri-plugin-video = { version = "0.4" }
 ```
 
 `backend: 'tauri'` with `backendOptions.tauri.engine` omitted selects GStreamer

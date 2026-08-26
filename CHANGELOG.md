@@ -17,6 +17,13 @@ Release numbering follows the
 - Rebuild the linked guest adapter before the example starts or bundles, and
   show the underlying native startup cause when attachment fails.
 
+## 0.4.0
+
+- Add `@get-air/video-tauri/framework` with explicit installation for the Air
+  framework's literal `<video>` intrinsic.
+- Open the `@get-air/video` peer compatibility line to `>=0.3.0 <0.4.0` and
+  test against exact core `0.3.0`.
+
 ## 0.3.0
 
 - Remove the `auto` native-engine option and automatic engine-priority configuration.

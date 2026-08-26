@@ -40,6 +40,23 @@ const player = await client.attach(video, {
 Client defaults and per-attachment settings are merged. Per-attachment settings
 win.
 
+## Air framework `<video>`
+
+Install the Tauri driver once in the platform shell before mounting an Air
+framework app:
+
+```ts
+import { installTauriFrameworkVideo } from '@get-air/video-tauri/framework'
+
+const restoreVideoDriver = installTauriFrameworkVideo({
+  playback: { engine: 'gstreamer' },
+})
+```
+
+After installation, literal framework `<video>` elements select the `tauri`
+backend while browser shells retain the core HTML driver. The returned cleanup
+is idempotent and restores the previous framework driver.
+
 ## Native protocol compatibility
 
 Before `native_open`, the adapter calls the read-only `native_diagnostics`
@@ -197,9 +214,9 @@ export function Player() {
 ```
 
 ```ts
-import { attachBlitsVideo } from '@get-air/video/blits'
+import { attachCanvasVideo } from '@get-air/video/canvas'
 
-const player = await attachBlitsVideo({
+const player = await attachCanvasVideo({
   client,
   canvas,
   rect,
@@ -208,7 +225,7 @@ const player = await attachBlitsVideo({
 })
 ```
 
-`VideoPlayer`, `TvVideoPlayer`, `attachCanvasVideo`, `attachBlitsVideo`, and the
+`VideoPlayer`, `TvVideoPlayer`, `attachCanvasVideo`, and the
 SolidTV adapter all accept the same client.
 
 ## Effect layer

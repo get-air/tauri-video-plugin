@@ -4,12 +4,28 @@ import {
   type VisibleSurfaceBounds,
 } from './native-surface-layout'
 import {
+  CORNER_CLIP_PATHS,
+  ZERO_RADII,
+  ZERO_RADIUS_STYLES,
+  cornerPanels,
+  intersectBounds,
+  mergeIntersectionRadii,
+  outsidePanels,
+  parseCornerRadii,
+  radiiForIntersection,
+  subtractRadius,
+  type CornerRadii,
+  type CornerRadiusStyles,
+  type Rect,
+} from './native-surface-geometry'
+import {
   registerVideoControls as registerAirVideoControls,
   VIDEO_CONTROLS_ATTRIBUTE,
   type VideoControlsTarget,
-} from '@get-air/video'
+} from '@get-air/video/controls'
 
-export { VIDEO_CONTROLS_ATTRIBUTE, type VideoControlsTarget } from '@get-air/video'
+export { VIDEO_CONTROLS_ATTRIBUTE, type VideoControlsTarget } from '@get-air/video/controls'
+export { outsidePanels } from './native-surface-geometry'
 
 /**
  * Marks arbitrary DOM as intentional video UI. The element can live anywhere
@@ -32,42 +48,14 @@ export interface SurfaceCompositorFrame {
   width: number
   height: number
   radii: CornerRadii
-  ancestors: readonly AncestorFrame[]
-  occluders: readonly OccluderFrame[]
-  overlays: readonly Rect[]
+  ancestors: readonly ElementFrame[]
+  occluders: readonly ElementFrame[]
 }
 
-interface AncestorFrame {
+interface ElementFrame {
   element: HTMLElement
   rect: Rect
 }
-
-interface OccluderFrame {
-  element: HTMLElement
-  rect: Rect
-}
-
-interface Rect {
-  left: number
-  top: number
-  width: number
-  height: number
-}
-
-interface PanelRect {
-  left: number
-  top: number
-  width: number
-  height: number
-}
-
-interface CornerRadius {
-  x: number
-  y: number
-}
-
-type CornerRadii = readonly [CornerRadius, CornerRadius, CornerRadius, CornerRadius]
-type CornerRadiusStyles = readonly [string, string, string, string]
 
 interface BackgroundPanel {
   clip: HTMLDivElement
@@ -131,6 +119,15 @@ interface NativeCssSurfaceState {
   lastBounds?: VisibleSurfaceBounds
 }
 
+const BACKGROUND_PROPERTIES = [
+  'background-color', 'background-image', 'background-position', 'background-size',
+  'background-repeat', 'background-origin', 'background-clip', 'background-attachment',
+  'background-blend-mode', 'box-sizing', 'padding-top', 'padding-right', 'padding-bottom',
+  'padding-left', 'border-top-width', 'border-right-width', 'border-bottom-width',
+  'border-left-width', 'border-top-style', 'border-right-style', 'border-bottom-style',
+  'border-left-style',
+] as const
+
 const nativeCssSurfaceScope = globalThis as typeof globalThis & {
   __TAURI_VIDEO_NATIVE_CSS_SURFACE__?: NativeCssSurfaceState
 }
@@ -174,7 +171,6 @@ export class NativeSurfaceCompositor {
       radii,
       ancestors: [],
       occluders: [],
-      overlays: [],
     }
     const ancestors = state.drilled.map(({ element }) => ({
       element,
@@ -184,10 +180,6 @@ export class NativeSurfaceCompositor {
       element,
       rect: rectFrom(element.getBoundingClientRect()),
     }))
-    const overlays = Array.from(
-      document.querySelectorAll<HTMLElement>(`[${VIDEO_CONTROLS_ATTRIBUTE}]`),
-      (element) => rectFrom(element.getBoundingClientRect()),
-    ).filter(({ width, height }) => width > 0 && height > 0)
     for (let index = 0; index < ancestors.length; index += 1) {
       const ancestor = state.drilled[index]
       const clip = ancestorClip(ancestors[index].rect, ancestor)
@@ -209,7 +201,6 @@ export class NativeSurfaceCompositor {
       radii,
       ancestors,
       occluders,
-      overlays,
     }
   }
 
@@ -298,41 +289,6 @@ export class NativeSurfaceCompositor {
     return state?.owner === this.#owner && state.anchor === this.#anchor ? state : undefined
   }
 }
-
-export function outsidePanels(ancestor: Rect, hole: VisibleSurfaceBounds): readonly PanelRect[] {
-  const right = ancestor.left + ancestor.width
-  const bottom = ancestor.top + ancestor.height
-  const intersectionLeft = clamp(hole.left, ancestor.left, right)
-  const intersectionTop = clamp(hole.top, ancestor.top, bottom)
-  const intersectionRight = clamp(hole.right, ancestor.left, right)
-  const intersectionBottom = clamp(hole.bottom, ancestor.top, bottom)
-  if (intersectionRight <= intersectionLeft || intersectionBottom <= intersectionTop) {
-    return [
-      { left: 0, top: 0, width: ancestor.width, height: ancestor.height },
-      EMPTY_PANEL,
-      EMPTY_PANEL,
-      EMPTY_PANEL,
-    ]
-  }
-
-  const localLeft = intersectionLeft - ancestor.left
-  const localTop = intersectionTop - ancestor.top
-  const localRight = intersectionRight - ancestor.left
-  const localBottom = intersectionBottom - ancestor.top
-  return [
-    { left: 0, top: 0, width: ancestor.width, height: localTop },
-    { left: 0, top: localBottom, width: ancestor.width, height: ancestor.height - localBottom },
-    { left: 0, top: localTop, width: localLeft, height: localBottom - localTop },
-    {
-      left: localRight,
-      top: localTop,
-      width: ancestor.width - localRight,
-      height: localBottom - localTop,
-    },
-  ]
-}
-
-const EMPTY_PANEL: PanelRect = Object.freeze({ left: 0, top: 0, width: 0, height: 0 })
 
 function claimSurface(owner: string, anchor: HTMLVideoElement): void {
   const existing = nativeCssSurfaceScope.__TAURI_VIDEO_NATIVE_CSS_SURFACE__
@@ -510,32 +466,9 @@ function refreshBackgrounds(state: NativeCssSurfaceState): void {
 
 function readBackground(element: HTMLElement): BackgroundSnapshot {
   const computed = getComputedStyle(element)
-  const names = [
-    'background-color',
-    'background-image',
-    'background-position',
-    'background-size',
-    'background-repeat',
-    'background-origin',
-    'background-clip',
-    'background-attachment',
-    'background-blend-mode',
-    'box-sizing',
-    'padding-top',
-    'padding-right',
-    'padding-bottom',
-    'padding-left',
-    'border-top-width',
-    'border-right-width',
-    'border-bottom-width',
-    'border-left-width',
-    'border-top-style',
-    'border-right-style',
-    'border-bottom-style',
-    'border-left-style',
-  ] as const
   return {
-    properties: names.map((property) => [property, computed.getPropertyValue(property)] as const),
+    properties: BACKGROUND_PROPERTIES.map((property) => (
+      [property, computed.getPropertyValue(property)] as const)),
     borderRadius: computed.borderRadius,
     clipsX: clipsOverflow(computed.overflowX),
     clipsY: clipsOverflow(computed.overflowY),
@@ -619,23 +552,28 @@ function commitOccluder(
     restoreOccluder(occluder)
     return
   }
-  const panels = outsidePanels(rect, hole).filter(({ width, height }) => width > 0 && height > 0)
-  const image = panels.length > 0
-    ? panels.map(() => 'linear-gradient(#000, #000)').join(',')
-    : 'linear-gradient(transparent, transparent)'
-  const position = panels.length > 0
-    ? panels.map(({ left: x, top: y }) => `${x}px ${y}px`).join(',')
-    : '0 0'
-  const size = panels.length > 0
-    ? panels.map(({ width, height }) => `${width}px ${height}px`).join(',')
-    : '100% 100%'
+  let image = ''
+  let position = ''
+  let size = ''
+  for (const panel of outsidePanels(rect, hole)) {
+    if (panel.width <= 0 || panel.height <= 0) continue
+    const separator = image ? ',' : ''
+    image += `${separator}linear-gradient(#000, #000)`
+    position += `${separator}${panel.left}px ${panel.top}px`
+    size += `${separator}${panel.width}px ${panel.height}px`
+  }
+  if (!image) {
+    image = 'linear-gradient(transparent, transparent)'
+    position = '0 0'
+    size = '100% 100%'
+  }
   if (occluder.element.getAttribute(OCCLUDER_ATTRIBUTE) !== occluder.owner) {
     occluder.element.setAttribute(OCCLUDER_ATTRIBUTE, occluder.owner)
   }
   occluder.active = true
-  setImportantProperty(occluder.element, MASK_IMAGE_PROPERTY, image)
-  setImportantProperty(occluder.element, MASK_POSITION_PROPERTY, position)
-  setImportantProperty(occluder.element, MASK_SIZE_PROPERTY, size)
+  setProperty(occluder.element, MASK_IMAGE_PROPERTY, image, 'important')
+  setProperty(occluder.element, MASK_POSITION_PROPERTY, position, 'important')
+  setProperty(occluder.element, MASK_SIZE_PROPERTY, size, 'important')
 }
 
 function createBackgroundPanels(ancestor: DrilledAncestor): void {
@@ -742,7 +680,7 @@ function readCornerRadiusStyles(
 
 function stylesheetMutation(record: MutationRecord): boolean {
   if (record.target instanceof HTMLStyleElement) return true
-  return [...record.addedNodes, ...record.removedNodes].some((node) => (
+  return someChangedNode(record, (node) => (
     node instanceof HTMLStyleElement
     || (node instanceof HTMLLinkElement && node.rel === 'stylesheet')
   ))
@@ -751,7 +689,7 @@ function stylesheetMutation(record: MutationRecord): boolean {
 function structuralMutation(record: MutationRecord, state: NativeCssSurfaceState): boolean {
   if (record.type !== 'childList') return false
   if (record.target instanceof HTMLElement && state.protectedElements.has(record.target)) return true
-  return [...record.addedNodes, ...record.removedNodes].some((node) => (
+  return someChangedNode(record, (node) => (
     node === state.anchor
     || (node instanceof Element && (
       node.contains(state.anchor)
@@ -775,9 +713,15 @@ function withoutNativeCoordinates(style: string): string {
 
 function mutationContains(record: MutationRecord, anchor: HTMLElement): boolean {
   if (record.target instanceof Node && record.target.contains(anchor)) return true
-  return [...record.addedNodes, ...record.removedNodes].some((node) => (
+  return someChangedNode(record, (node) => (
     node === anchor || (node instanceof Node && node.contains(anchor))
   ))
+}
+
+function someChangedNode(record: MutationRecord, predicate: (node: Node) => boolean): boolean {
+  for (const node of record.addedNodes) if (predicate(node)) return true
+  for (const node of record.removedNodes) if (predicate(node)) return true
+  return false
 }
 
 function setStyle(element: HTMLElement, property: string, value: string): void {
@@ -791,14 +735,10 @@ function setStyle(element: HTMLElement, property: string, value: string): void {
   values.set(property, value)
 }
 
-function setProperty(element: HTMLElement, property: string, value: string): void {
-  if (element.style.getPropertyValue(property) !== value) element.style.setProperty(property, value)
-}
-
-function setImportantProperty(element: HTMLElement, property: string, value: string): void {
+function setProperty(element: HTMLElement, property: string, value: string, priority = ''): void {
   if (element.style.getPropertyValue(property) !== value
-    || element.style.getPropertyPriority(property) !== 'important') {
-    element.style.setProperty(property, value, 'important')
+    || (priority && element.style.getPropertyPriority(property) !== priority)) {
+    element.style.setProperty(property, value, priority)
   }
 }
 
@@ -818,10 +758,6 @@ function restoreInlineProperty(
   else element.style.removeProperty(property)
 }
 
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.min(maximum, Math.max(minimum, value))
-}
-
 function ancestorClip(
   rect: Rect,
   ancestor: DrilledAncestor,
@@ -839,20 +775,6 @@ function ancestorClip(
   }
 }
 
-function intersectBounds(
-  first: VisibleSurfaceBounds,
-  second: VisibleSurfaceBounds,
-): VisibleSurfaceBounds {
-  const left = Math.max(first.left, second.left)
-  const top = Math.max(first.top, second.top)
-  return {
-    left,
-    top,
-    right: Math.max(left, Math.min(first.right, second.right)),
-    bottom: Math.max(top, Math.min(first.bottom, second.bottom)),
-  }
-}
-
 function innerCornerRadii(ancestor: DrilledAncestor, rect: Rect): CornerRadii {
   if (!ancestor.clipsX || !ancestor.clipsY) return ZERO_RADII
   const radii = parseCornerRadii(ancestor.radii, {
@@ -867,100 +789,6 @@ function innerCornerRadii(ancestor: DrilledAncestor, rect: Rect): CornerRadii {
     subtractRadius(radii[2], ancestor.borderRight, ancestor.borderBottom),
     subtractRadius(radii[3], ancestor.borderLeft, ancestor.borderBottom),
   ]
-}
-
-function subtractRadius(radius: CornerRadius, horizontal: number, vertical: number): CornerRadius {
-  return { x: Math.max(0, radius.x - horizontal), y: Math.max(0, radius.y - vertical) }
-}
-
-function parseCornerRadii(
-  styles: CornerRadiusStyles,
-  bounds: VisibleSurfaceBounds,
-): CornerRadii {
-  const width = Math.max(0, bounds.right - bounds.left)
-  const height = Math.max(0, bounds.bottom - bounds.top)
-  return styles.map((style) => {
-    const [horizontal = '0', vertical = horizontal] = style.trim().split(/\s+/)
-    return {
-      x: radiusPixels(horizontal, width),
-      y: radiusPixels(vertical, height),
-    }
-  }) as unknown as CornerRadii
-}
-
-function radiusPixels(value: string, extent: number): number {
-  const parsed = Number.parseFloat(value)
-  if (!Number.isFinite(parsed)) return 0
-  return Math.max(0, value.endsWith('%') ? extent * parsed / 100 : parsed)
-}
-
-function radiiForIntersection(
-  bounds: VisibleSurfaceBounds,
-  shape: VisibleSurfaceBounds,
-  radii: CornerRadii,
-): CornerRadii {
-  return [
-    sameEdge(bounds.left, shape.left) && sameEdge(bounds.top, shape.top) ? radii[0] : ZERO_RADIUS,
-    sameEdge(bounds.right, shape.right) && sameEdge(bounds.top, shape.top) ? radii[1] : ZERO_RADIUS,
-    sameEdge(bounds.right, shape.right) && sameEdge(bounds.bottom, shape.bottom) ? radii[2] : ZERO_RADIUS,
-    sameEdge(bounds.left, shape.left) && sameEdge(bounds.bottom, shape.bottom) ? radii[3] : ZERO_RADIUS,
-  ]
-}
-
-function mergeIntersectionRadii(
-  previousBounds: VisibleSurfaceBounds,
-  previousRadii: CornerRadii,
-  bounds: VisibleSurfaceBounds,
-  shape: VisibleSurfaceBounds,
-  shapeRadii: CornerRadii,
-): CornerRadii {
-  const carried = radiiForIntersection(bounds, previousBounds, previousRadii)
-  const introduced = radiiForIntersection(bounds, shape, shapeRadii)
-  return carried.map((radius, index) => ({
-    x: Math.max(radius.x, introduced[index].x),
-    y: Math.max(radius.y, introduced[index].y),
-  })) as unknown as CornerRadii
-}
-
-function sameEdge(first: number, second: number): boolean {
-  return Math.abs(first - second) < 0.01
-}
-
-function cornerPanels(bounds: VisibleSurfaceBounds, radii: CornerRadii): readonly PanelRect[] {
-  return [
-    { left: bounds.left, top: bounds.top, width: radii[0].x, height: radii[0].y },
-    { left: bounds.right - radii[1].x, top: bounds.top, width: radii[1].x, height: radii[1].y },
-    {
-      left: bounds.right - radii[2].x,
-      top: bounds.bottom - radii[2].y,
-      width: radii[2].x,
-      height: radii[2].y,
-    },
-    { left: bounds.left, top: bounds.bottom - radii[3].y, width: radii[3].x, height: radii[3].y },
-  ]
-}
-
-function cornerClipPath(
-  outer: readonly [number, number],
-  center: readonly [number, number],
-  startDegrees: number,
-  endDegrees: number,
-): string {
-  const points: Array<readonly [number, number]> = [outer]
-  for (let step = 0; step <= 8; step += 1) {
-    const angle = (startDegrees + (endDegrees - startDegrees) * step / 8) * Math.PI / 180
-    points.push([
-      center[0] + 100 * Math.cos(angle),
-      center[1] + 100 * Math.sin(angle),
-    ])
-  }
-  return `polygon(${points.map(([x, y]) => `${cleanPercent(x)}% ${cleanPercent(y)}%`).join(',')})`
-}
-
-function cleanPercent(value: number): number {
-  if (Math.abs(value) < 0.0001) return 0
-  if (Math.abs(value - 100) < 0.0001) return 100
-  return Math.round(value * 1_000) / 1_000
 }
 
 function clipsOverflow(value: string): boolean {
@@ -981,21 +809,6 @@ function cssPixels(value: string): number {
   const parsed = Number.parseFloat(value)
   return Number.isFinite(parsed) ? parsed : 0
 }
-
-const ZERO_RADIUS: CornerRadius = Object.freeze({ x: 0, y: 0 })
-const ZERO_RADII: CornerRadii = Object.freeze([
-  ZERO_RADIUS,
-  ZERO_RADIUS,
-  ZERO_RADIUS,
-  ZERO_RADIUS,
-])
-const ZERO_RADIUS_STYLES: CornerRadiusStyles = Object.freeze(['0px', '0px', '0px', '0px'])
-const CORNER_CLIP_PATHS = Object.freeze([
-  cornerClipPath([0, 0], [100, 100], -90, -180),
-  cornerClipPath([100, 0], [0, 100], -90, 0),
-  cornerClipPath([100, 100], [0, 0], 90, 0),
-  cornerClipPath([0, 100], [100, 0], 90, 180),
-])
 
 const NATIVE_VIDEO_CSS_PROPERTIES = [
   '--tauri-native-video-left',

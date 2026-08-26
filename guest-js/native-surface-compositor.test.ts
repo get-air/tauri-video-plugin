@@ -95,6 +95,7 @@ describe('NativeSurfaceCompositor', () => {
 
     const compositor = new NativeSurfaceCompositor('test-owner', video)
     const frame = compositor.measure({ x: 140, y: 120, width: 320, height: 180 }, 1)
+    expect(frame).not.toHaveProperty('overlays')
     compositor.commit(frame)
 
     expect(shell.getAttribute('data-tauri-native-video-hole')).toBe('test-owner')

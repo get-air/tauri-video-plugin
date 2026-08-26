@@ -43,8 +43,8 @@ npm run build
 npm pack --dry-run --ignore-scripts
 npm ci --prefix examples/tauri-app
 npm run build --prefix examples/tauri-app
-npm ci --prefix examples/solid-tv-blits-app
-npm run build --prefix examples/solid-tv-blits-app
+npm ci --prefix examples/blits-app
+npm run build --prefix examples/blits-app
 ```
 
 With the native dependencies for your platform installed, run:

@@ -121,13 +121,13 @@ for (let index = 0; index < args.length; index += 1) {
 const packageJson = readJson('package.json')
 const packageLock = readJson('package-lock.json')
 const tauriExample = readJson('examples/tauri-app/package.json')
-const blitsExample = readJson('examples/solid-tv-blits-app/package.json')
+const blitsExample = readJson('examples/blits-app/package.json')
 const tauriExampleLock = readJson('examples/tauri-app/package-lock.json')
-const blitsExampleLock = readJson('examples/solid-tv-blits-app/package-lock.json')
+const blitsExampleLock = readJson('examples/blits-app/package-lock.json')
 const cargoTomlText = readText('Cargo.toml')
 const cargoLockText = readText('Cargo.lock')
 const tauriExampleCargoLock = readText('examples/tauri-app/src-tauri/Cargo.lock')
-const blitsExampleCargoLock = readText('examples/solid-tv-blits-app/src-tauri/Cargo.lock')
+const blitsExampleCargoLock = readText('examples/blits-app/src-tauri/Cargo.lock')
 const changelog = readText('CHANGELOG.md')
 const protocol = readText('guest-js/protocol.ts')
 const rustModels = readText('src/models.rs')
@@ -137,7 +137,7 @@ checkLocalDependencies(packageJson, 'package.json')
 checkLocalDependencies(tauriExample, 'examples/tauri-app/package.json', {
   '@get-air/video-tauri': 'file:../..',
 })
-checkLocalDependencies(blitsExample, 'examples/solid-tv-blits-app/package.json', {
+checkLocalDependencies(blitsExample, 'examples/blits-app/package.json', {
   '@get-air/video-tauri': 'file:../..',
 })
 
@@ -218,11 +218,11 @@ const checkNpmExample = (label, manifest, lock) => {
 }
 
 checkNpmExample('examples/tauri-app', tauriExample, tauriExampleLock)
-checkNpmExample('examples/solid-tv-blits-app', blitsExample, blitsExampleLock)
+checkNpmExample('examples/blits-app', blitsExample, blitsExampleLock)
 
 for (const [label, source] of [
   ['examples/tauri-app/src-tauri/Cargo.lock', tauriExampleCargoLock],
-  ['examples/solid-tv-blits-app/src-tauri/Cargo.lock', blitsExampleCargoLock],
+  ['examples/blits-app/src-tauri/Cargo.lock', blitsExampleCargoLock],
 ]) {
   const packages = parseCargoLockPackages(source).filter(
     (entry) => entry.name === cargoName && entry.source === undefined,

@@ -32,19 +32,6 @@ pub enum TrackKind {
     Subtitle,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NativeRect {
-    pub left: f64,
-    pub top: f64,
-    pub width: f64,
-    pub height: f64,
-    #[serde(default)]
-    pub radius_x: f64,
-    #[serde(default)]
-    pub radius_y: f64,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeOpenRequest {
@@ -82,10 +69,6 @@ pub struct NativeOpenRequest {
     pub scroll_y: f64,
     pub width: f64,
     pub height: f64,
-    #[serde(default)]
-    pub surface_aperture: Option<NativeRect>,
-    #[serde(default)]
-    pub surface_overlays: Vec<NativeRect>,
     #[serde(default = "default_true")]
     pub autoplay: bool,
     #[serde(default = "default_volume")]
@@ -131,10 +114,6 @@ pub struct NativeLayoutRequest {
     pub scroll_y: f64,
     pub width: f64,
     pub height: f64,
-    #[serde(default)]
-    pub surface_aperture: Option<NativeRect>,
-    #[serde(default)]
-    pub surface_overlays: Vec<NativeRect>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -179,6 +158,14 @@ pub struct NativePlaybackSnapshot {
     pub duration_seconds: f64,
     pub current_time_seconds: f64,
     pub buffered_seconds: f64,
+    #[serde(default)]
+    pub live: bool,
+    #[serde(default = "default_true")]
+    pub seekable: bool,
+    #[serde(default)]
+    pub seekable_start_seconds: f64,
+    #[serde(default)]
+    pub seekable_end_seconds: f64,
     pub playing: bool,
     pub video_width: u32,
     pub video_height: u32,

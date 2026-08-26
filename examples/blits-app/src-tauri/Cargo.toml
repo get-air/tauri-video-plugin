@@ -1,5 +1,5 @@
 [package]
-name = "solid-tv-blits-video-example"
+name = "air-blits-video-example"
 version = "0.1.0"
 description = "Native Tauri video beneath a transparent Blits canvas"
 edition = "2021"

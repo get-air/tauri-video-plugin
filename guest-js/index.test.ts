@@ -37,6 +37,10 @@ interface TestSnapshot {
   durationSeconds: number
   currentTimeSeconds: number
   bufferedSeconds: number
+  live?: boolean
+  seekable?: boolean
+  seekableStartSeconds?: number
+  seekableEndSeconds?: number
   playing: boolean
   videoWidth: number
   videoHeight: number
@@ -269,6 +273,8 @@ describe('native controller contract', () => {
     const open = mocks.invoke.mock.calls.find(([command]) => commandName(command) === 'native_open')
     expect((open?.[1] as { payload?: Record<string, unknown> })?.payload)
       .not.toHaveProperty('surfaceAperture')
+    expect((open?.[1] as { payload?: Record<string, unknown> })?.payload)
+      .not.toHaveProperty('surfaceOverlays')
   })
 
   it('rejects a different native protocol before opening a player', async () => {
@@ -349,6 +355,64 @@ describe('native controller contract', () => {
     expect((await first.stats()).sessionId).toBe(first.sessionId)
   })
 
+  it('exposes live metadata and a moving seek window without reporting an end', async () => {
+    snapshot = {
+      ...snapshot,
+      durationSeconds: 0,
+      currentTimeSeconds: 1_230,
+      bufferedSeconds: 1_242,
+      live: true,
+      seekable: true,
+      seekableStartSeconds: 1_180,
+      seekableEndSeconds: 1_245,
+    }
+    const element = document.createElement('video')
+    document.body.append(element)
+    const controller = await attachTauriBackend(element, {
+      source: 'https://example.test/live.m3u8',
+      suspendWhenHidden: false,
+      surfaceMode: 'transparent-canvas',
+    })
+    controllers.add(controller)
+
+    expect(controller.media).toMatchObject({
+      durationSeconds: undefined,
+      live: true,
+      seekable: true,
+      seekableStartSeconds: 1_180,
+      seekableEndSeconds: 1_245,
+    })
+    expect(element.duration).toBe(Number.POSITIVE_INFINITY)
+    expect(element.ended).toBe(false)
+    expect(element.seekable.length).toBe(1)
+    expect(element.seekable.start(0)).toBe(1_180)
+    expect(element.seekable.end(0)).toBe(1_245)
+
+    mocks.invoke.mockClear()
+    await controller.seek(2_000)
+    expect(mocks.invoke.mock.calls.find(([command]) => commandName(command) === 'native_control')?.[1])
+      .toMatchObject({ payload: { action: 'seek', value: 1_245 } })
+  })
+
+  it('rejects seeks when a live stream has no seekable window', async () => {
+    snapshot = {
+      ...snapshot,
+      durationSeconds: 0,
+      live: true,
+      seekable: false,
+    }
+    const controller = await attach({ source: 'https://example.test/live.m3u8' })
+    expect(controller.media).toMatchObject({ live: true, seekable: false })
+    expect(controller.element.seekable.length).toBe(0)
+    mocks.invoke.mockClear()
+
+    await expect(controller.seek(10)).rejects.toMatchObject({
+      _tag: 'VideoFeatureUnavailableError',
+      feature: 'seeking',
+    })
+    expect(nativeActions()).toEqual([])
+  })
+
   it('rejects unknown or non-disableable tracks without changing local or native state', async () => {
     const controller = await attach()
     const originalTracks = controller.tracks.map((track) => ({ ...track }))
@@ -424,6 +488,7 @@ describe('native controller contract', () => {
   it('exposes complete Windows TextureStream geometry without JS frame copies', async () => {
     const controller = await attach()
     expect(controller.capabilities).toMatchObject({ videoFit: true, videoZoom: true })
+    expect(controller.capabilities).toBe(controller.capabilities)
     mocks.invoke.mockClear()
 
     await controller.setVideoFit('stretch')
@@ -437,7 +502,7 @@ describe('native controller contract', () => {
   it('preserves complete fit and zoom support for Linux mpv', async () => {
     vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Linux x86_64')
     snapshot.hardwareBackend = 'mpv:vaapi:h264:gtk-glarea'
-    const controller = await attach({ source: 'movie.mkv', nativeBackend: 'mpv' })
+    const controller = await attach({ source: 'movie.mkv', playback: { engine: 'mpv' } })
     expect(controller.capabilities).toMatchObject({ videoFit: true, videoZoom: true })
     mocks.invoke.mockClear()
 
@@ -494,21 +559,4 @@ describe('native surface geometry', () => {
     expect(sameNativeSurfacePosition(nestedScroll, before, true)).toBe(false)
   })
 
-  it('treats Windows overlay movement as a native surface-region change', () => {
-    const before = {
-      x: 20,
-      y: 40,
-      width: 900,
-      height: 500,
-      scrollX: 0,
-      scrollY: 0,
-      surfaceAperture: { left: 20, top: 40, width: 900, height: 500 },
-      surfaceOverlays: [{ left: 20, top: 480, width: 900, height: 60 }],
-    }
-    const after = {
-      ...before,
-      surfaceOverlays: [{ left: 20, top: 460, width: 900, height: 80 }],
-    }
-    expect(sameNativeSurfacePosition(after, before, false)).toBe(false)
-  })
 })

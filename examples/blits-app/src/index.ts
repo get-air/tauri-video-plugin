@@ -1,5 +1,5 @@
 import Blits from '@lightningjs/blits'
-import { transparentBlitsSettings } from '@get-air/video/blits'
+import { transparentCanvasRendererOptions } from '@get-air/video/canvas'
 
 import App from './App'
 
@@ -12,5 +12,6 @@ Blits.Launch(App, 'app', {
   canvas,
   debugLevel: 1,
   maxFPS: 60,
-  ...transparentBlitsSettings,
+  canvasColor: '#00000000',
+  advanced: transparentCanvasRendererOptions,
 })

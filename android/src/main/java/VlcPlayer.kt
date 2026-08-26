@@ -188,11 +188,17 @@ internal class VlcPlayer(
         val estimatedReserveMs = ((config.networkCachingMs ?: 0) * (bufferingPercent / 100f)).toLong()
         val bufferedMs = if (durationMs > 0L) min(durationMs, currentMs + estimatedReserveMs)
             else currentMs + estimatedReserveMs
+        val live = durationMs <= 0L
+        val seekable = player.isSeekable
         val video = player.currentVideoTrack
         return VlcSnapshot(
             durationSeconds = durationMs / 1000.0,
             currentTimeSeconds = currentMs / 1000.0,
             bufferedSeconds = bufferedMs / 1000.0,
+            live = live,
+            seekable = seekable,
+            seekableStartSeconds = 0.0,
+            seekableEndSeconds = maxOf(durationMs, bufferedMs) / 1000.0,
             playing = player.isPlaying,
             videoWidth = video?.width ?: 0,
             videoHeight = video?.height ?: 0,
@@ -288,6 +294,10 @@ internal data class VlcSnapshot(
     val durationSeconds: Double,
     val currentTimeSeconds: Double,
     val bufferedSeconds: Double,
+    val live: Boolean,
+    val seekable: Boolean,
+    val seekableStartSeconds: Double,
+    val seekableEndSeconds: Double,
     val playing: Boolean,
     val videoWidth: Int,
     val videoHeight: Int,

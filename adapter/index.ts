@@ -1,6 +1,7 @@
 import type { HttpTransport } from '@get-air/http'
 import {
   createVideoClient,
+  markVideoPlayerError,
   type AttachVideoOptions,
   type BackendVideoController,
   type VideoBackendAdapter,
@@ -11,16 +12,25 @@ import {
 } from '@get-air/video'
 
 import type { VideoNativeProtocolMismatchError } from '../guest-js/protocol-error'
+import { configureNativeVideoErrorFactories } from '../guest-js/runtime-errors'
 
 import {
   attachTauriBackend as attachNativeBackend,
-  type AndroidPlaybackOptions as LegacyAndroidPlaybackOptions,
-  type LinuxPlaybackOptions as LegacyLinuxPlaybackOptions,
   type NativeAttachVideoOptions,
-  type NativeBufferOptions as LegacyNativeBufferOptions,
-  type NativeVideoBackend,
-  type WindowsPlaybackOptions as LegacyWindowsPlaybackOptions,
+  type NativeBufferOptions,
+  type TauriPlaybackOptions,
 } from '../guest-js/index'
+
+configureNativeVideoErrorFactories({
+  protocolMismatch: async (details) => {
+    const { VideoNativeProtocolMismatchError } = await import('../guest-js/protocol-error')
+    return markVideoPlayerError(new VideoNativeProtocolMismatchError(details))
+  },
+  featureUnavailable: async (details) => {
+    const { VideoFeatureUnavailableError } = await import('@get-air/video/effect')
+    return new VideoFeatureUnavailableError(details)
+  },
+})
 
 export * from '@get-air/video'
 export {
@@ -39,25 +49,21 @@ export {
   type VideoNativeProtocolMismatchError,
 } from '../guest-js/protocol'
 
-// These aliases intentionally keep the adapter's native configuration public
-// without putting any native concept in @get-air/video.
-export type NativeBufferOptions = LegacyNativeBufferOptions
-export type AndroidPlaybackOptions = LegacyAndroidPlaybackOptions
-export type LinuxPlaybackOptions = LegacyLinuxPlaybackOptions
-export type WindowsPlaybackOptions = LegacyWindowsPlaybackOptions
-export type { NativeVideoBackend }
-
-export interface TauriPlaybackOptions {
-  /** Native engine selected behind the Tauri adapter. */
-  engine?: NativeVideoBackend
-  android?: AndroidPlaybackOptions
-  /** Merged over android when deviceProfile is tv. */
-  androidTv?: AndroidPlaybackOptions
-  linux?: LinuxPlaybackOptions
-  windows?: WindowsPlaybackOptions
-}
+export type {
+  AndroidPlaybackOptions,
+  LinuxPlaybackOptions,
+  NativeBufferOptions,
+  NativeVideoBackend,
+  TauriPlaybackOptions,
+  WindowsPlaybackOptions,
+} from '../guest-js/index'
 
 declare module '@get-air/video' {
+  interface MediaInfo {
+    seekableStartSeconds?: number
+    seekableEndSeconds?: number
+  }
+
   interface VideoBackendOptionsMap {
     tauri: TauriPlaybackOptions
   }
@@ -117,18 +123,12 @@ export function attachTauriBackend(
   defaults: TauriPlaybackOptions = {},
 ): Promise<BackendVideoController> {
   const playback = mergePlayback(defaults, options.backendOptions?.tauri)
-  const legacy: NativeAttachVideoOptions = {
+  const nativeOptions: NativeAttachVideoOptions = {
     ...options,
     backend: 'tauri',
-    nativeBackend: playback.engine,
-    platform: {
-      android: playback.android,
-      androidTv: playback.androidTv,
-      linux: playback.linux,
-      windows: playback.windows,
-    },
+    playback,
   }
-  return attachNativeBackend(element, legacy) as Promise<BackendVideoController>
+  return attachNativeBackend(element, nativeOptions)
 }
 
 function mergePlayback(

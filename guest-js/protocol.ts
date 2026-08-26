@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
-import { markVideoPlayerError } from '@get-air/video'
 
 import type { VideoNativeProtocolMismatchError } from './protocol-error'
+import { nativeProtocolMismatchError } from './runtime-errors'
 
 const COMMAND = 'plugin:video|'
 
@@ -14,7 +14,7 @@ export const TAURI_VIDEO_PROTOCOL_VERSION = 1 as const
 export const TAURI_VIDEO_PACKAGE_NAME = '@get-air/video-tauri' as const
 // Kept explicit so diagnostics work in browsers. A focused test enforces that
 // this value cannot drift from package.json during a version bump.
-export const TAURI_VIDEO_PACKAGE_VERSION = '0.3.0' as const
+export const TAURI_VIDEO_PACKAGE_VERSION = '0.4.0' as const
 
 export interface NativeVideoPluginDiagnostics {
   readonly protocolVersion: number
@@ -88,7 +88,7 @@ export function clearVerifiedTauriVideoProtocolForTesting(): void {
   verifiedProtocol = undefined
 }
 
-interface ProtocolMismatchDetails {
+interface ProtocolMismatchRequest {
   readonly actualProtocolVersion?: number
   readonly crateName?: string
   readonly crateVersion?: string
@@ -97,17 +97,14 @@ interface ProtocolMismatchDetails {
 }
 
 async function protocolMismatch(
-  details: ProtocolMismatchDetails,
+  details: ProtocolMismatchRequest,
 ): Promise<VideoNativeProtocolMismatchError> {
-  // Keep Effect out of the successful Promise entrypoint. The schema-backed
-  // error module is loaded only when compatibility validation fails.
-  const { VideoNativeProtocolMismatchError } = await import('./protocol-error')
-  return markVideoPlayerError(new VideoNativeProtocolMismatchError({
+  return await nativeProtocolMismatchError({
     expectedProtocolVersion: TAURI_VIDEO_PROTOCOL_VERSION,
     packageName: TAURI_VIDEO_PACKAGE_NAME,
     packageVersion: TAURI_VIDEO_PACKAGE_VERSION,
     ...details,
-  }))
+  }) as VideoNativeProtocolMismatchError
 }
 
 function decodeNativeDiagnostics(value: unknown): NativeVideoPluginDiagnostics {
@@ -130,9 +127,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
-function errorMessage(error: unknown): string {
+export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
   if (typeof error === 'string') return error
-  if (isRecord(error) && typeof error.message === 'string') return error.message
+  if (isRecord(error)) {
+    for (const key of ['message', 'error', 'detail', 'cause'] as const) {
+      if (key in error) {
+        const value: unknown = error[key]
+        if (value === error) continue
+        const message = errorMessage(value)
+        if (message && message !== '[object Object]') return message
+      }
+    }
+    try { return JSON.stringify(error) }
+    catch { /* use the default string below */ }
+  }
   return String(error)
 }

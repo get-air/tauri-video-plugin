@@ -31,7 +31,8 @@ and platform qualification.
 
 ## Capabilities and Constraints
 
-- Stream remote media over HTTP and HTTPS with seeking and bounded buffering.
+- Stream remote VOD and live HLS/DASH media over HTTP and HTTPS with bounded
+  buffering, native live-state detection, and seeking when a DVR window exists.
 - Prefer hardware decoding and direct native presentation; avoid decoded-frame copies in the normal path.
 - Support MP4, WebM, Ogg, MKV, and other containers supported by the active native backend.
 - Expose audio, subtitle, and video track selection plus playback and buffer telemetry.

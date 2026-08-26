@@ -3402,7 +3402,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-video"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "gio 0.22.8",
  "gstreamer",

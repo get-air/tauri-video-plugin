@@ -35,6 +35,7 @@ features, and `PATCH` for compatible fixes.
 | `0.1.x` | `>=0.1.0 <0.2.0` | Legacy (unversioned) | Initial lockstep release line |
 | `0.2.x` | `>=0.1.1 <0.2.0` | `1` | Required core peer and protocol handshake |
 | `0.3.x` | `>=0.2.0 <0.3.0` | `1` | Explicit Media3/GStreamer defaults; no automatic engine value |
+| `0.4.x` | `>=0.3.0 <0.4.0` | `1` | Air framework `<video>` driver and core framework integration |
 
 Matching version numbers between the core and this repository are
 coincidental; only the declared package range and this table express support.

@@ -1,6 +1,6 @@
 {
   "name": "@get-air/video-tauri",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": "Air contributors",
   "description": "Native Tauri backend adapter for @get-air/video",
   "license": "MIT OR Apache-2.0",
@@ -37,9 +37,17 @@
       "types": "./dist-js/adapter/index.d.ts",
       "import": "./dist-js/index.js"
     },
+    "./native": {
+      "types": "./dist-js/adapter/native.d.ts",
+      "import": "./dist-js/native.js"
+    },
     "./effect": {
       "types": "./dist-js/adapter/effect.d.ts",
       "import": "./dist-js/effect.js"
+    },
+    "./framework": {
+      "types": "./dist-js/adapter/framework.d.ts",
+      "import": "./dist-js/framework.js"
     }
   },
   "files": [
@@ -68,15 +76,16 @@
   "allowScripts": { "esbuild": true },
   "dependencies": {
     "@get-air/http": "^0.1.0",
+    "@plussub/srt-vtt-parser": "^2.0.5",
     "@tauri-apps/api": "^2.0.0",
     "effect": "^3.22.1"
   },
   "peerDependencies": {
-    "@get-air/video": ">=0.2.0 <0.3.0"
+    "@get-air/video": ">=0.3.0 <0.4.0"
   },
   "devDependencies": {
     "@effect/language-service": "^0.87.2",
-    "@get-air/video": "0.2.0",
+    "@get-air/video": "0.3.0",
     "@rollup/plugin-typescript": "^12.0.0",
     "@types/node": "^24.13.3",
     "happy-dom": "^20.11.2",

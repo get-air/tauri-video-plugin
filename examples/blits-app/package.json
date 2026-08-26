@@ -1,5 +1,5 @@
 {
-  "name": "solid-tv-blits-video-example",
+  "name": "air-blits-video-example",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -11,7 +11,7 @@
   },
   "allowScripts": { "esbuild": true },
   "dependencies": {
-    "@get-air/video": "^0.2.0",
+    "@get-air/video": "^0.3.0",
     "@get-air/video-tauri": "file:../..",
     "@lightningjs/blits": "^2.8.7",
     "@tauri-apps/api": "^2.0.0"

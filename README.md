@@ -30,10 +30,19 @@ compositor without decoded-frame IPC.
 Containers, codecs, DRM, HDR, and UHD limits depend on the selected engine and
 target hardware.
 
-All engines provide playback, seeking, volume, tracks, custom headers, and
-telemetry. Crop-to-cover and zoom are supported on Android, Windows, and Linux
-mpv; playback-rate changes and frame-accurate seeking are not currently
-supported.
+All engines provide playback, live-stream detection, volume, tracks, custom
+headers, and telemetry. HLS and DASH live playback is available when the active
+engine has its corresponding runtime components; Media3 ships both modules.
+Live state is exposed through `controller.media.live`, and DVR windows expose
+`controller.media.seekable`. Crop-to-cover and zoom are supported on Android,
+Windows, and Linux mpv; playback-rate changes and frame-accurate seeking are not
+currently supported.
+
+For a live controller, `media.durationSeconds` is `undefined` and the attached
+HTML video's `duration` is `Infinity`. Seekable live windows publish their
+current native bounds through `video.seekable`; direct seeks are clamped to that
+window. Non-seekable feeds reject `seek()` with the shared typed unsupported
+feature error and never report an ended state.
 
 ## Install
 
@@ -43,7 +52,7 @@ npm install @get-air/video @get-air/video-tauri
 
 ```toml
 [dependencies]
-tauri-plugin-video = "0.2"
+tauri-plugin-video = "0.4"
 ```
 
 ```rust
@@ -57,7 +66,7 @@ Add `video:default` to the Tauri capability used by your window.
 Linux uses GStreamer by default. To make mpv selectable:
 
 ```toml
-tauri-plugin-video = { version = "0.2", features = ["gstreamer-runtime", "mpv-runtime"] }
+tauri-plugin-video = { version = "0.4", features = ["gstreamer-runtime", "mpv-runtime"] }
 ```
 
 ## Use
@@ -81,6 +90,18 @@ await player.play()
 Omit `engine` to use the platform default: Media3 on Android and GStreamer on
 desktop builds that include it.
 
+For an Air framework app, install the native driver before `createApp()`. The
+framework's literal `<video>` intrinsic will then use native playback instead
+of the browser backend:
+
+```ts
+import { installTauriFrameworkVideo } from '@get-air/video-tauri/framework'
+
+const restoreVideoDriver = installTauriFrameworkVideo()
+// Mount the Air app, which can now render <video src={movieUrl} />.
+// Call restoreVideoDriver() when the Tauri shell is disposed.
+```
+
 ## Core integrations
 
 All `@get-air/video` integrations can use the installed Tauri backend:
@@ -89,13 +110,13 @@ All `@get-air/video` integrations can use the installed Tauri backend:
 | --- | --- |
 | Promise API | `createTauriVideoClient()` |
 | Effect | `layerTauriVideoBackend()` from `@get-air/video-tauri/effect` |
+| Air framework `<video>` | `installTauriFrameworkVideo()` from `@get-air/video-tauri/framework` |
 | React / TV focus | `client` prop |
 | Canvas | `client` option |
-| SolidTV | `client` option |
 | Blits | `client` option |
 
-Keep importing the framework helpers from `@get-air/video/*`; only the client
-or Effect layer comes from the Tauri adapter. Canvas, SolidTV, and Blits also
+Keep importing the framework helpers from `@get-air/video/*`; only the client,
+framework driver, or Effect layer comes from the Tauri adapter. Canvas and Blits also
 need the transparent aperture shown in the [examples](examples) on Linux and
 Android; Windows TextureStream remains ordinary DOM video.
 
@@ -106,6 +127,8 @@ Android; Windows TextureStream remains ordinary DOM video.
 | Adapter + crate | `@get-air/video` | Native protocol |
 | --- | --- | --- |
 | `0.2.x` | `>=0.1.1 <0.2.0` | `1` |
+| `0.3.x` | `>=0.2.0 <0.3.0` | `1` |
+| `0.4.x` | `>=0.3.0 <0.4.0` | `1` |
 
 [API](docs/api.md) · [Examples](examples) · [Versioning](VERSIONING.md) ·
 [Contributing](CONTRIBUTING.md)

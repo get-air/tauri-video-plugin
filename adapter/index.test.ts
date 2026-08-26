@@ -67,8 +67,8 @@ describe('attachTauriBackend', () => {
     expect(mocks.attachNativeBackend).toHaveBeenCalledWith(element, expect.objectContaining({
       source: 'movie.mkv',
       backend: 'tauri',
-      nativeBackend: 'gstreamer',
-      platform: {
+      playback: {
+        engine: 'gstreamer',
         android: undefined,
         androidTv: undefined,
         linux: { buffer: { minSeconds: 2, maxSeconds: 18 } },

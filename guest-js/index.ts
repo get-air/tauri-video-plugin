@@ -1,6 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
-  AttachVideoOptions as CoreAttachVideoOptions,
   BackendVideoController,
   MediaInfo,
   MediaTrack,
@@ -13,6 +12,12 @@ import type {
   VideoPluginError,
 } from '@get-air/video'
 import {
+  nativeOpenSettings,
+  nativePlatform,
+  type NativeAttachVideoOptions,
+  type NativePlaybackSnapshot,
+} from './models'
+import {
   sameNativeSurfacePosition,
   snapNativeSurfaceLayout,
   type NativeSurfacePosition,
@@ -24,10 +29,12 @@ import {
   type VideoControlsTarget,
 } from './native-surface-compositor'
 import {
+  errorMessage,
   TAURI_VIDEO_PACKAGE_VERSION,
   TAURI_VIDEO_PROTOCOL_VERSION,
   verifyTauriVideoProtocol,
 } from './protocol'
+import { nativeFeatureUnavailableError } from './runtime-errors'
 
 export {
   registerVideoControls,
@@ -44,6 +51,15 @@ export {
   type TauriVideoDiagnostics,
   type VideoNativeProtocolMismatchError,
 } from './protocol'
+export type {
+  AndroidPlaybackOptions,
+  LinuxPlaybackOptions,
+  NativeAttachVideoOptions,
+  NativeBufferOptions,
+  NativeVideoBackend,
+  TauriPlaybackOptions,
+  WindowsPlaybackOptions,
+} from './models'
 
 const COMMAND = 'plugin:video|'
 
@@ -59,77 +75,6 @@ function webView2TextureStream(): WebView2TextureStreamApi | undefined {
   return typeof getTextureStream === 'function'
     ? { getTextureStream: getTextureStream.bind(scope.chrome?.webview) }
     : undefined
-}
-
-export type NativeVideoBackend = 'media3' | 'libvlc' | 'gstreamer' | 'mpv'
-
-export interface NativeBufferOptions {
-  /** Optional backend-specific minimum reserve override. Omit to use the player's default. */
-  minSeconds?: number
-  /** Optional backend-specific maximum reserve override. Omit to use the player's default. */
-  maxSeconds?: number
-  /** Optional initial-play reserve override. */
-  playSeconds?: number
-  /** Optional post-stall reserve override. */
-  rebufferSeconds?: number
-  /** Optional encoded-buffer target. Decoder surfaces are not included. */
-  maxBytes?: number
-}
-
-export interface AndroidPlaybackOptions {
-  buffer?: NativeBufferOptions
-  /** Allow Media3 to try another installed MediaCodec decoder. This never switches engines. */
-  decoderFallback?: boolean
-  dolbyVision?: 'hevc-base-layer' | 'platform'
-  tunneling?: boolean
-}
-
-export interface LinuxPlaybackOptions {
-  buffer?: NativeBufferOptions
-}
-
-export interface WindowsPlaybackOptions {
-  buffer?: NativeBufferOptions
-}
-
-export interface PlatformPlaybackOptions {
-  android?: AndroidPlaybackOptions
-  /** Merged over android when deviceProfile is tv. */
-  androidTv?: AndroidPlaybackOptions
-  linux?: LinuxPlaybackOptions
-  windows?: WindowsPlaybackOptions
-}
-
-/** Internal native settings consumed only by the Tauri adapter. */
-export interface NativeAttachVideoOptions extends CoreAttachVideoOptions {
-  backend?: 'tauri'
-  nativeBackend?: NativeVideoBackend
-  platform?: PlatformPlaybackOptions
-}
-
-interface NativePlaybackSnapshot {
-  durationSeconds: number
-  currentTimeSeconds: number
-  bufferedSeconds: number
-  playing: boolean
-  videoWidth: number
-  videoHeight: number
-  presentedFrames?: number
-  droppedFrames?: number
-  measuredFps?: number
-  hardwareBackend?: string
-  encodedBytesBuffered?: number
-  averageFrameProcessingUs?: number
-  container?: string
-  tracks: Array<{
-    id: string
-    index: number
-    kind: TrackKind
-    language: string
-    label: string
-    codec: string
-    selected: boolean
-  }>
 }
 
 /** @internal Raw Tauri backend factory used by the public adapter. */
@@ -195,9 +140,11 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
   readonly #originalTransform: string
   readonly #originalTransformOrigin: string
   #removeAbortListener?: () => void
+  readonly #platform = nativePlatform()
+  #capabilities?: PlayerCapabilities
   readonly #sessionKey = globalThis.crypto?.randomUUID?.()
     ?? `native-${Date.now()}-${++nativeSurfaceSequence}`
-  readonly #sessionId = `${nativePlatform()}-native-surface-${this.#sessionKey}`
+  readonly #sessionId = `${this.#platform}-native-surface-${this.#sessionKey}`
 
   constructor(element: HTMLVideoElement, options: NativeAttachVideoOptions) {
     super()
@@ -216,8 +163,9 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
 
   get sessionId(): string { return this.#sessionId }
   get capabilities(): PlayerCapabilities {
+    if (this.#capabilities) return this.#capabilities
     const completeVideoGeometry = this.#supportsCompleteVideoGeometry()
-    return {
+    return this.#capabilities = {
       backend: 'tauri',
       containers: 'platform',
       codecs: 'platform',
@@ -254,7 +202,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     this.#claimCssSurface()
     if (this.#options.controlRegions) this.registerControls(this.#options.controlRegions)
     let textureStream: Promise<MediaStream> | undefined
-    if (nativePlatform() === 'windows') {
+    if (this.#platform === 'windows') {
       const api = webView2TextureStream()
       if (!api) {
         throw new Error('This WebView2 runtime does not expose GPU texture streams')
@@ -283,7 +231,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
           autoplay: textureStream !== undefined || requestedAutoplay,
           volume: textureBootstrap ? 0 : this.#volume,
           muted: this.#muted,
-          ...nativeOpenSettings(this.#options),
+          ...nativeOpenSettings(this.#options, this.#platform),
         },
       })
     } catch (error) {
@@ -341,7 +289,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
       this.element.dispatchEvent(new Event('play'))
       this.element.dispatchEvent(new Event('playing'))
     }
-    if (nativePlatform() !== 'windows') {
+    if (this.#platform !== 'windows') {
       this.#resize = new ResizeObserver(() => this.#requestLayout())
       this.#resize.observe(this.element)
       this.#stopCompositorObserver = this.#compositor?.observe((backgroundChanged) => {
@@ -401,27 +349,26 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     this.element.dispatchEvent(new Event('volumechange'))
   }
 
-  async setPlaybackRate(_rate: number): Promise<void> {
-    // Keep the normal Tauri entrypoint free of Effect's runtime cost. The
-    // common typed error is loaded only when an unsupported operation is used.
-    const { VideoFeatureUnavailableError } = await import('@get-air/video/effect')
-    throw new VideoFeatureUnavailableError({
-      backend: 'tauri',
-      feature: 'playbackRate',
-      message: 'The Tauri native engines do not expose portable playback-rate changes',
-    })
+  setPlaybackRate(_rate: number): Promise<void> {
+    return unsupported('playbackRate',
+      'The Tauri native engines do not expose portable playback-rate changes')
   }
 
   async seek(positionSeconds: number): Promise<void> {
     if (!Number.isFinite(positionSeconds) || positionSeconds < 0) {
       throw new RangeError('positionSeconds must be a finite, non-negative number')
     }
-    const wasPlaying = this.#snapshot?.playing ?? false
-    const target = Math.min(this.#snapshot?.durationSeconds || Number.POSITIVE_INFINITY, positionSeconds)
-    this.#pendingSeek = { target, deadline: performance.now() + 30_000 }
-    if (this.#snapshot) {
-      this.#snapshot = { ...this.#snapshot, currentTimeSeconds: target }
+    if (this.#snapshot?.seekable === false) {
+      return unsupported('seeking', 'The active media does not expose a seekable window')
     }
+    const wasPlaying = this.#snapshot?.playing ?? false
+    const minimum = this.#snapshot?.seekableStartSeconds ?? 0
+    const maximum = this.#snapshot?.seekableEndSeconds
+      ?? (this.#snapshot?.live ? Number.POSITIVE_INFINITY
+        : this.#snapshot?.durationSeconds || Number.POSITIVE_INFINITY)
+    const target = Math.max(minimum, Math.min(maximum, positionSeconds))
+    this.#pendingSeek = { target, deadline: performance.now() + 30_000 }
+    if (this.#snapshot) this.#snapshot.currentTimeSeconds = target
     this.element.dispatchEvent(new Event('seeking'))
     this.dispatchEvent(new CustomEvent('timeupdate', {
       detail: { currentTime: target },
@@ -456,12 +403,8 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
       const active = this.#media.tracks.find((track) => track.kind === kind && track.selected)
       if (active) this.#acceptSnapshot(await this.#control('deselectTrack', 0, active.streamIndex))
     } else {
-      const { VideoFeatureUnavailableError } = await import('@get-air/video/effect')
-      throw new VideoFeatureUnavailableError({
-        backend: 'tauri',
-        feature: `${kind}TrackDisable`,
-        message: `The Tauri native engines cannot disable the selected ${kind} track through the common API`,
-      })
+      return unsupported(`${kind}TrackDisable`,
+        `The Tauri native engines cannot disable the selected ${kind} track through the common API`)
     }
     for (const track of this.#media.tracks) {
       if (track.kind === kind) track.selected = track.id === trackId
@@ -470,15 +413,13 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
   }
 
   async stats(): Promise<SessionStats> {
-    const snapshot = await invoke<NativePlaybackSnapshot>(`${COMMAND}native_stats`, {
-      payload: { sessionKey: this.#sessionKey },
-    })
+    const snapshot = await this.#readStats()
     this.#acceptSnapshot(snapshot)
     return {
       sessionId: this.sessionId,
       encodedBytesBuffered: snapshot.encodedBytesBuffered ?? 0,
       bufferedAheadSeconds: Math.max(0, snapshot.bufferedSeconds - snapshot.currentTimeSeconds),
-      hardwareBackend: snapshot.hardwareBackend || (/Android/i.test(navigator.userAgent)
+      hardwareBackend: snapshot.hardwareBackend || (this.#platform === 'android'
         ? 'android-mediaplayer-surface'
         : 'gstreamer-va-gl-gtk'),
       decodedFrameCopies: 0,
@@ -510,18 +451,12 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     }
   }
 
-  refreshLayout(): void {
-    this.#requestLayout()
-  }
+  refreshLayout(): void { this.#requestLayout() }
 
   async setVideoFit(mode: VideoFitMode): Promise<void> {
     if (mode === 'cover' && !this.#supportsCompleteVideoGeometry()) {
-      const { VideoFeatureUnavailableError } = await import('@get-air/video/effect')
-      throw new VideoFeatureUnavailableError({
-        backend: 'tauri',
-        feature: 'videoFit',
-        message: 'The active GStreamer sink cannot crop video to the common cover fit mode',
-      })
+      return unsupported('videoFit',
+        'The active GStreamer sink cannot crop video to the common cover fit mode')
     }
     this.#acceptSnapshot(await this.#control(mode === 'cover' ? 'crop' : mode))
     this.#videoFit = mode
@@ -530,12 +465,8 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
 
   async setVideoZoom(scale: number): Promise<void> {
     if (!this.#supportsCompleteVideoGeometry()) {
-      const { VideoFeatureUnavailableError } = await import('@get-air/video/effect')
-      throw new VideoFeatureUnavailableError({
-        backend: 'tauri',
-        feature: 'videoZoom',
-        message: 'The active GStreamer sink does not expose portable video-surface zoom',
-      })
+      return unsupported('videoZoom',
+        'The active GStreamer sink does not expose portable video-surface zoom')
     }
     const clamped = Math.min(2, Math.max(1, scale))
     this.#acceptSnapshot(await this.#control('zoom', clamped))
@@ -577,7 +508,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     window.removeEventListener('resize', this.#handleViewportChange)
     window.visualViewport?.removeEventListener('scroll', this.#handleViewportChange)
     window.visualViewport?.removeEventListener('resize', this.#handleViewportChange)
-    for (const cleanup of [...this.#controlCleanups]) cleanup()
+    for (const cleanup of this.#controlCleanups) cleanup()
     for (const track of this.#textureStream?.getTracks() ?? []) track.stop()
     this.#textureStream = undefined
     this.element.srcObject = null
@@ -597,12 +528,16 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     this.#releaseCssSurface()
   }
 
-  async #control(action: string, value = 0, index = -1): Promise<NativePlaybackSnapshot> {
+  #control(action: string, value = 0, index = -1): Promise<NativePlaybackSnapshot> {
     return invoke<NativePlaybackSnapshot>(`${COMMAND}native_control`, {
       // Session ownership prevents delayed cleanup from a prior React render
       // from controlling the replacement native player.
       payload: { sessionKey: this.#sessionKey, action, value, index },
     })
+  }
+
+  #readStats(): Promise<NativePlaybackSnapshot> {
+    return invoke(`${COMMAND}native_stats`, { payload: { sessionKey: this.#sessionKey } })
   }
 
   async #poll(): Promise<void> {
@@ -614,9 +549,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     this.#polling = true
     try {
       const previous = this.#snapshot
-      const snapshot = await invoke<NativePlaybackSnapshot>(`${COMMAND}native_stats`, {
-        payload: { sessionKey: this.#sessionKey },
-      })
+      const snapshot = await this.#readStats()
       const visibleSnapshot = this.#acceptSnapshot(snapshot)
       this.#updateMedia(visibleSnapshot)
       this.dispatchEvent(new CustomEvent('timeupdate', {
@@ -629,7 +562,8 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
       if (previous?.bufferedSeconds !== snapshot.bufferedSeconds) {
         this.element.dispatchEvent(new Event('progress'))
       }
-      if (previous?.durationSeconds !== snapshot.durationSeconds) {
+      if (previous?.durationSeconds !== snapshot.durationSeconds
+        || previous?.live !== snapshot.live) {
         this.element.dispatchEvent(new Event('durationchange'))
       }
       if (previous?.playing !== snapshot.playing) {
@@ -637,25 +571,34 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
         if (snapshot.playing) this.element.dispatchEvent(new Event('playing'))
       }
       const wasEnded = Boolean(previous
+        && !previous.live
         && previous.durationSeconds > 0
         && previous.currentTimeSeconds >= previous.durationSeconds)
-      const isEnded = snapshot.durationSeconds > 0
+      const isEnded = !snapshot.live
+        && snapshot.durationSeconds > 0
         && snapshot.currentTimeSeconds >= snapshot.durationSeconds
       if (!wasEnded && isEnded) {
         this.#requestedPlaying = false
         this.element.dispatchEvent(new Event('ended'))
       }
     } catch (error) {
-      if (!this.#destroyed) this.dispatchEvent(new CustomEvent('error', { detail: normalizeError(error) }))
+      this.#publishError(error)
     } finally {
       this.#polling = false
     }
   }
 
   #updateMedia(snapshot: NativePlaybackSnapshot): void {
-    this.#media.durationSeconds = snapshot.durationSeconds
-    this.#media.seekable = true
-    this.#media.live = false
+    const live = snapshot.live ?? false
+    this.#media.durationSeconds = live ? undefined : snapshot.durationSeconds
+    this.#media.seekable = snapshot.seekable ?? !live
+    this.#media.seekableStartSeconds = this.#media.seekable
+      ? snapshot.seekableStartSeconds ?? 0
+      : undefined
+    this.#media.seekableEndSeconds = this.#media.seekable
+      ? snapshot.seekableEndSeconds ?? (live ? undefined : snapshot.durationSeconds)
+      : undefined
+    this.#media.live = live
     this.#media.container = snapshot.container ?? 'unknown'
     const tracksChanged = snapshot.tracks.length !== this.#media.tracks.length
       || snapshot.tracks.some((track, index) => {
@@ -692,19 +635,12 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
 
   #acceptSnapshot(snapshot: NativePlaybackSnapshot): NativePlaybackSnapshot {
     const pending = this.#pendingSeek
-    if (!pending) {
-      this.#snapshot = snapshot
-      return snapshot
+    if (pending) {
+      if (Math.abs(snapshot.currentTimeSeconds - pending.target) <= 1
+        || performance.now() >= pending.deadline) this.#pendingSeek = undefined
+      else snapshot.currentTimeSeconds = pending.target
     }
-    const reachedTarget = Math.abs(snapshot.currentTimeSeconds - pending.target) <= 1
-    if (reachedTarget || performance.now() >= pending.deadline) {
-      this.#pendingSeek = undefined
-      this.#snapshot = snapshot
-      return snapshot
-    }
-    const optimistic = { ...snapshot, currentTimeSeconds: pending.target }
-    this.#snapshot = optimistic
-    return optimistic
+    return this.#snapshot = snapshot
   }
 
   #installMediaFacade(): void {
@@ -719,14 +655,14 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
       }
       Object.defineProperty(this.element, key, { configurable: true, ...descriptor })
     }
-    const ranges = (end: number): TimeRanges => ({
-      length: end > 0 ? 1 : 0,
+    const ranges = (start: number, end: number): TimeRanges => ({
+      length: end > start ? 1 : 0,
       start: (index: number) => {
-        if (index !== 0 || end <= 0) throw new DOMException('Index out of bounds', 'IndexSizeError')
-        return 0
+        if (index !== 0 || end <= start) throw new DOMException('Index out of bounds', 'IndexSizeError')
+        return start
       },
       end: (index: number) => {
-        if (index !== 0 || end <= 0) throw new DOMException('Index out of bounds', 'IndexSizeError')
+        if (index !== 0 || end <= start) throw new DOMException('Index out of bounds', 'IndexSizeError')
         return end
       },
     })
@@ -737,10 +673,15 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
       get: () => this.#snapshot?.currentTimeSeconds ?? 0,
       set: (value: number) => { this.#runDetached(this.seek(Number(value))) },
     })
-    define('duration', { get: () => this.#snapshot?.durationSeconds ?? Number.NaN })
+    define('duration', {
+      get: () => this.#snapshot?.live
+        ? Number.POSITIVE_INFINITY
+        : this.#snapshot?.durationSeconds ?? Number.NaN,
+    })
     define('paused', { get: () => !this.#requestedPlaying })
     define('ended', {
       get: () => Boolean(this.#snapshot
+        && !this.#snapshot.live
         && this.#snapshot.durationSeconds > 0
         && this.#snapshot.currentTimeSeconds >= this.#snapshot.durationSeconds),
     })
@@ -758,8 +699,26 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
         this.element.dispatchEvent(new Event('volumechange'))
       },
     })
-    define('buffered', { get: () => ranges(this.#snapshot?.bufferedSeconds ?? 0) })
-    define('seekable', { get: () => ranges(this.#snapshot?.durationSeconds ?? 0) })
+    define('buffered', {
+      get: () => {
+        const snapshot = this.#snapshot
+        if (!snapshot) return ranges(0, 0)
+        const start = snapshot.live
+          ? snapshot.seekableStartSeconds ?? snapshot.currentTimeSeconds
+          : 0
+        return ranges(Math.min(start, snapshot.currentTimeSeconds), snapshot.bufferedSeconds)
+      },
+    })
+    define('seekable', {
+      get: () => {
+        const snapshot = this.#snapshot
+        if (!snapshot || snapshot.seekable === false) return ranges(0, 0)
+        return ranges(
+          snapshot.seekableStartSeconds ?? 0,
+          snapshot.seekableEndSeconds ?? (snapshot.live ? 0 : snapshot.durationSeconds),
+        )
+      },
+    })
     define('readyState', { get: () => this.#snapshot ? HTMLMediaElement.HAVE_ENOUGH_DATA : HTMLMediaElement.HAVE_NOTHING })
     define('networkState', { get: () => this.#snapshot ? HTMLMediaElement.NETWORK_IDLE : HTMLMediaElement.NETWORK_LOADING })
     define('currentSrc', { get: () => source })
@@ -780,59 +739,28 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
 
   #measureLayout(): {
     layout: NativeSurfacePosition
-    frame: SurfaceCompositorFrame
+    frame: SurfaceCompositorFrame | undefined
   } {
     const rect = this.element.getBoundingClientRect()
     // Android SurfaceView layout uses physical pixels; GTK Fixed uses logical
     // coordinates, which match getBoundingClientRect directly.
-    const android = /Android/i.test(navigator.userAgent)
+    const android = this.#platform === 'android'
     const scale = android ? (window.devicePixelRatio || 1) : 1
-    const surface = {
-      ...snapNativeSurfaceLayout(rect, android, scale),
-      scrollX: android ? Math.round(window.scrollX * scale) : 0,
-      scrollY: android ? Math.round(window.scrollY * scale) : 0,
-    }
-    const frame = this.#compositor?.measure(surface, scale) ?? {
-      bounds: { left: 0, top: 0, right: 0, bottom: 0 },
-      width: 0,
-      height: 0,
-      radii: [
-        { x: 0, y: 0 },
-        { x: 0, y: 0 },
-        { x: 0, y: 0 },
-        { x: 0, y: 0 },
-      ] as const,
-      ancestors: [],
-      occluders: [],
-      overlays: [],
-    }
-    const layout: NativeSurfacePosition = {
-      ...surface,
-      ...(nativePlatform() === 'windows' && this.#compositor ? {
-        surfaceAperture: {
-          left: frame.bounds.left,
-          top: frame.bounds.top,
-          width: Math.max(0, frame.bounds.right - frame.bounds.left),
-          height: Math.max(0, frame.bounds.bottom - frame.bounds.top),
-          radiusX: Math.max(...frame.radii.map(({ x }) => x)),
-          radiusY: Math.max(...frame.radii.map(({ y }) => y)),
-        },
-        surfaceOverlays: frame.overlays,
-      } : undefined),
-    }
-    return {
-      layout,
-      frame,
-    }
+    const layout = snapNativeSurfaceLayout(rect, android, scale) as NativeSurfacePosition
+    const scrollX = Number(window.scrollX)
+    const scrollY = Number(window.scrollY)
+    layout.scrollX = android && Number.isFinite(scrollX) ? Math.round(scrollX * scale) : 0
+    layout.scrollY = android && Number.isFinite(scrollY) ? Math.round(scrollY * scale) : 0
+    return { layout, frame: this.#compositor?.measure(layout, scale) }
   }
 
   #claimCssSurface(): void {
-    if (nativePlatform() === 'windows' || this.#options.surfaceMode === 'transparent-canvas') return
+    if (this.#platform === 'windows' || this.#options.surfaceMode === 'transparent-canvas') return
     this.#compositor = new NativeSurfaceCompositor(this.#sessionKey, this.element)
   }
 
   #applyWindowsVideoGeometry(): void {
-    if (nativePlatform() !== 'windows') return
+    if (this.#platform !== 'windows') return
     this.element.style.objectFit = this.#videoFit === 'fit'
       ? 'contain'
       : this.#videoFit === 'cover' ? 'cover' : 'fill'
@@ -858,8 +786,8 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     return nativeMediaElementStates.get(this.element)?.owner === this.#sessionKey
   }
 
-  #publishCssLayout(frame: SurfaceCompositorFrame): void {
-    this.#compositor?.commit(frame)
+  #publishCssLayout(frame: SurfaceCompositorFrame | undefined): void {
+    if (frame) this.#compositor?.commit(frame)
   }
 
   #releaseCssSurface(): void {
@@ -886,19 +814,14 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
   }
 
   #supportsCompleteVideoGeometry(): boolean {
-    if (/Android|Windows/i.test(navigator.userAgent)) return true
-    if (!/Linux/i.test(navigator.userAgent)) return false
-    return this.#options.nativeBackend === 'mpv'
+    if (this.#platform === 'android' || this.#platform === 'windows') return true
+    if (this.#platform !== 'linux') return false
+    return this.#options.playback?.engine === 'mpv'
       || /\bmpv\b/i.test(this.#snapshot?.hardwareBackend ?? '')
   }
 
-  #handleViewportChange = (): void => {
-    this.#requestLayout()
-  }
-
-  #handleDocumentVisibility = (): void => {
-    this.#queueVisibilitySync()
-  }
+  #handleViewportChange = (): void => this.#requestLayout()
+  #handleDocumentVisibility = (): void => this.#queueVisibilitySync()
 
   #startPolling(): void {
     if (this.#timer === undefined && !this.#destroyed && !this.#suspendedForVisibility) {
@@ -926,11 +849,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
     this.#visibilityMutation = this.#visibilityMutation
       .catch(() => undefined)
       .then(() => this.#syncVisibility())
-      .catch((error) => {
-        if (!this.#destroyed) {
-          this.dispatchEvent(new CustomEvent('error', { detail: normalizeError(error) }))
-        }
-      })
+      .catch((error) => this.#publishError(error))
   }
 
   async #syncVisibility(): Promise<void> {
@@ -953,7 +872,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
   }
 
   #requestLayout(): void {
-    if (this.#destroyed || nativePlatform() === 'windows') return
+    if (this.#destroyed || this.#platform === 'windows') return
     this.#layoutDirty = true
     if (this.#layoutFrame !== undefined || this.#layoutInFlight) return
     this.#layoutFrame = requestAnimationFrame(() => {
@@ -969,7 +888,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
       if (!this.#layoutDirty) return
       this.#layoutDirty = false
       const { layout, frame } = this.#measureLayout()
-      if (sameNativeSurfacePosition(layout, this.#lastLayout, /Android/i.test(navigator.userAgent))) {
+      if (sameNativeSurfacePosition(layout, this.#lastLayout, this.#platform === 'android')) {
         // Viewport bounds can change without moving the anchor. Refresh the
         // surrounding panels while keeping the already-aligned aperture.
         this.#publishCssLayout(frame)
@@ -984,9 +903,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
       // never reveal the transparent window beneath it.
       this.#publishCssLayout(frame)
     } catch (error) {
-      if (!this.#destroyed) {
-        this.dispatchEvent(new CustomEvent('error', { detail: normalizeError(error) }))
-      }
+      this.#publishError(error)
     } finally {
       this.#layoutInFlight = false
       if (this.#layoutDirty && !this.#destroyed) this.#requestLayout()
@@ -1003,46 +920,8 @@ function nativeScrollTargets(anchor: HTMLElement): EventTarget[] {
   return [...targets]
 }
 
-function nativeOpenSettings(options: NativeAttachVideoOptions): Record<string, unknown> {
-  const userAgent = navigator.userAgent
-  const android = /Android/i.test(userAgent)
-  const linux = /Linux/i.test(userAgent) && !android
-  const windows = /Windows/i.test(userAgent)
-  const tv = options.deviceProfile === 'tv'
-    || ((options.deviceProfile === undefined || options.deviceProfile === 'auto')
-      && /\bTV\b|AFT|BRAVIA|SHIELD|GoogleTV/i.test(userAgent))
-  const androidBase = options.platform?.android
-  const androidOptions = android
-    ? { ...androidBase, ...(tv ? options.platform?.androidTv : undefined) }
-    : undefined
-  const buffer = androidOptions?.buffer
-    ?? (linux ? options.platform?.linux?.buffer : undefined)
-    ?? (windows ? options.platform?.windows?.buffer : undefined)
-  return {
-    backend: nativeBackend(options),
-    minBufferMs: secondsToMilliseconds(buffer?.minSeconds),
-    maxBufferMs: secondsToMilliseconds(buffer?.maxSeconds),
-    playbackBufferMs: secondsToMilliseconds(buffer?.playSeconds),
-    rebufferMs: secondsToMilliseconds(buffer?.rebufferSeconds),
-    targetBufferBytes: buffer?.maxBytes,
-    decoderFallback: androidOptions?.decoderFallback,
-    dolbyVisionMode: androidOptions?.dolbyVision,
-    tunneling: androidOptions?.tunneling,
-  }
-}
-
-function nativePlatform(): 'android' | 'windows' | 'linux' {
-  if (/Android/i.test(navigator.userAgent)) return 'android'
-  if (/Windows/i.test(navigator.userAgent)) return 'windows'
-  return 'linux'
-}
-
-function nativeBackend(options: NativeAttachVideoOptions): NativeVideoBackend | undefined {
-  return options.nativeBackend
-}
-
-function secondsToMilliseconds(value?: number): number | undefined {
-  return value === undefined ? undefined : Math.max(0, Math.round(value * 1000))
+async function unsupported(feature: string, message: string): Promise<never> {
+  throw await nativeFeatureUnavailableError({ backend: 'tauri', feature, message })
 }
 
 function normalizeError(error: unknown): VideoPluginError {
@@ -1050,23 +929,4 @@ function normalizeError(error: unknown): VideoPluginError {
     return error as VideoPluginError
   }
   return { code: 'transport', message: errorMessage(error) }
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message
-  if (typeof error === 'string') return error
-  if (typeof error === 'object' && error) {
-    for (const key of ['message', 'error', 'detail', 'cause'] as const) {
-      if (key in error) {
-        const value: unknown = (error as Record<string, unknown>)[key]
-        if (value !== error) {
-          const message = errorMessage(value)
-          if (message && message !== '[object Object]') return message
-        }
-      }
-    }
-    try { return JSON.stringify(error) }
-    catch { /* fall through */ }
-  }
-  return String(error)
 }

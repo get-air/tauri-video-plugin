@@ -3,5 +3,5 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_video::Builder::new().build())
         .run(tauri::generate_context!())
-        .expect("error while running Solid-TV / Blits video example");
+        .expect("error while running Air / Blits video example");
 }

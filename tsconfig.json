@@ -13,10 +13,12 @@
   "include": [
     "adapter/**/*.ts",
     "guest-js/index.ts",
+    "guest-js/models.ts",
     "guest-js/index.test.ts",
     "guest-js/protocol.ts",
     "guest-js/protocol-error.ts",
     "guest-js/native-surface-layout.ts",
+    "guest-js/native-surface-geometry.ts",
     "guest-js/native-surface-compositor.ts",
     "guest-js/native-surface-compositor.test.ts",
     "scripts/**/*.ts",

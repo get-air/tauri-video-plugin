@@ -41,44 +41,44 @@ pub struct DesktopVideo<R: Runtime> {
     main_sender: gtk::glib::SyncSender<MainJob<R>>,
 }
 
+#[cfg(target_os = "linux")]
+use linux as platform;
+#[cfg(windows)]
+use windows as platform;
+
 impl<R: Runtime> DesktopVideo<R> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     pub fn open_native(&self, payload: NativeOpenRequest) -> crate::Result<NativePlaybackSnapshot> {
-        self.run_on_main(move |app| linux::open(app, payload))
+        self.run_on_main(move |app| platform::open(app, payload))
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     pub fn control_native(
         &self,
         payload: NativeControlRequest,
     ) -> crate::Result<NativePlaybackSnapshot> {
-        self.run_on_main(move |_| linux::control(payload))
+        self.run_on_main(move |_| platform::control(payload))
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     pub fn layout_native(&self, payload: NativeLayoutRequest) -> crate::Result<()> {
         // The WebView publishes its matching transparent aperture after this
-        // command resolves, so completion must mean GTK received the move.
+        // command resolves, so completion must mean the native host received the move.
         // The guest serializes layout calls, keeping this dispatcher bounded.
-        self.run_on_main(move |_| linux::layout(payload))
+        self.run_on_main(move |_| platform::layout(payload))
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     pub fn stats_native(
         &self,
         payload: NativeSessionRequest,
     ) -> crate::Result<NativePlaybackSnapshot> {
-        self.run_on_main(move |_| linux::stats(payload))
+        self.run_on_main(move |_| platform::stats(payload))
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     pub fn close_native(&self, payload: NativeSessionRequest) -> crate::Result<()> {
-        self.run_on_main(move |_| linux::close(payload))
-    }
-
-    #[cfg(windows)]
-    pub fn open_native(&self, payload: NativeOpenRequest) -> crate::Result<NativePlaybackSnapshot> {
-        self.run_on_windows_main(move |app| windows::open(app, payload))
+        self.run_on_main(move |_| platform::close(payload))
     }
 
     #[cfg(windows)]
@@ -87,33 +87,7 @@ impl<R: Runtime> DesktopVideo<R> {
     }
 
     #[cfg(windows)]
-    pub fn control_native(
-        &self,
-        payload: NativeControlRequest,
-    ) -> crate::Result<NativePlaybackSnapshot> {
-        self.run_on_windows_main(move |_| windows::control(payload))
-    }
-
-    #[cfg(windows)]
-    pub fn layout_native(&self, payload: NativeLayoutRequest) -> crate::Result<()> {
-        self.run_on_windows_main(move |_| windows::layout(payload))
-    }
-
-    #[cfg(windows)]
-    pub fn stats_native(
-        &self,
-        payload: NativeSessionRequest,
-    ) -> crate::Result<NativePlaybackSnapshot> {
-        self.run_on_windows_main(move |_| windows::stats(payload))
-    }
-
-    #[cfg(windows)]
-    pub fn close_native(&self, payload: NativeSessionRequest) -> crate::Result<()> {
-        self.run_on_windows_main(move |_| windows::close(payload))
-    }
-
-    #[cfg(windows)]
-    fn run_on_windows_main<T, F>(&self, operation: F) -> crate::Result<T>
+    fn run_on_main<T, F>(&self, operation: F) -> crate::Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&AppHandle<R>) -> crate::Result<T> + Send + 'static,
@@ -788,6 +762,21 @@ mod linux_gstreamer {
             .unwrap_or(0)
     }
 
+    fn playback_timeline(pipeline: &gst::Element, duration: f64) -> (bool, bool, f64, f64) {
+        let mut latency = gst::query::Latency::new();
+        let live = duration <= 0.0 || (pipeline.query(latency.query_mut()) && latency.result().0);
+        let mut seeking = gst::query::Seeking::new(gst::Format::Time);
+        if !pipeline.query(seeking.query_mut()) {
+            return (live, !live, 0.0, duration);
+        }
+        let (seekable, start, end) = seeking.result();
+        let seconds = |value: gst::GenericFormattedValue| match value {
+            gst::GenericFormattedValue::Time(Some(time)) => time.seconds_f64(),
+            _ => 0.0,
+        };
+        (live, seekable, seconds(start), seconds(end))
+    }
+
     pub fn control(payload: NativeControlRequest) -> Result<NativePlaybackSnapshot> {
         PLAYER.with(|slot| {
             let mut slot = slot.borrow_mut();
@@ -941,6 +930,21 @@ mod linux_gstreamer {
             .query_duration::<gst::ClockTime>()
             .map(|time| time.seconds_f64())
             .unwrap_or(0.0);
+        let (live, seekable, seekable_start, seekable_end) =
+            playback_timeline(&player.pipeline, duration);
+        let buffered = position
+            + player.buffer_duration_seconds.unwrap_or(0.0) * player.buffering_percent as f64
+                / 100.0;
+        let buffered = if live {
+            buffered.max(position)
+        } else {
+            buffered.min(duration.max(position))
+        };
+        let seekable_end = if seekable_end > seekable_start {
+            seekable_end
+        } else {
+            duration.max(buffered)
+        };
         let structure = player.gtk_sink.property::<gst::Structure>("stats");
         let rendered = structure.get::<u64>("rendered").unwrap_or(0);
         let dropped = structure.get::<u64>("dropped").unwrap_or(0);
@@ -974,10 +978,11 @@ mod linux_gstreamer {
         Ok(NativePlaybackSnapshot {
             duration_seconds: duration,
             current_time_seconds: position,
-            buffered_seconds: (position
-                + player.buffer_duration_seconds.unwrap_or(0.0) * player.buffering_percent as f64
-                    / 100.0)
-                .min(duration.max(position)),
+            buffered_seconds: buffered,
+            live,
+            seekable,
+            seekable_start_seconds: seekable_start,
+            seekable_end_seconds: seekable_end,
             playing,
             video_width,
             video_height,
@@ -1756,13 +1761,14 @@ mod linux_mpv {
         let position = property::<f64>(&player.mpv, "time-pos")
             .unwrap_or(0.0)
             .max(0.0);
-        let duration = property::<f64>(&player.mpv, "duration")
-            .unwrap_or(0.0)
-            .max(0.0);
+        let duration = property::<f64>(&player.mpv, "duration").filter(|value| *value > 0.0);
+        let live = duration.is_none();
+        let duration = duration.unwrap_or(0.0);
         let buffered = property::<f64>(&player.mpv, "demuxer-cache-time")
             .unwrap_or(position)
             .max(position)
             .min(duration.max(position));
+        let seekable = property::<bool>(&player.mpv, "seekable").unwrap_or(!live);
         let rendered = player.presented_frames.get();
         let dropped = property::<i64>(&player.mpv, "frame-drop-count")
             .unwrap_or(0)
@@ -1795,6 +1801,10 @@ mod linux_mpv {
             duration_seconds: duration,
             current_time_seconds: position,
             buffered_seconds: buffered,
+            live,
+            seekable,
+            seekable_start_seconds: 0.0,
+            seekable_end_seconds: duration.max(buffered),
             playing: !paused,
             video_width,
             video_height,
@@ -1971,50 +1981,15 @@ mod linux_mpv {
 }
 
 #[cfg(all(target_os = "linux", not(feature = "mpv-runtime")))]
-mod linux_mpv {
-    use tauri::{AppHandle, Runtime};
-
-    use crate::{
-        models::{
-            NativeControlRequest, NativeLayoutRequest, NativeOpenRequest, NativePlaybackSnapshot,
-            NativeSessionRequest,
-        },
-        Error, Result,
-    };
-
-    fn unavailable<T>() -> Result<T> {
-        Err(Error::RuntimeUnavailable(
-            "Linux mpv playback requires the mpv-runtime feature".into(),
-        ))
-    }
-    pub fn open<R: Runtime>(
-        _: &AppHandle<R>,
-        _: NativeOpenRequest,
-    ) -> Result<NativePlaybackSnapshot> {
-        unavailable()
-    }
-    pub fn control(_: NativeControlRequest) -> Result<NativePlaybackSnapshot> {
-        unavailable()
-    }
-    pub fn layout(_: NativeLayoutRequest) -> Result<()> {
-        unavailable()
-    }
-    pub fn stats(_: NativeSessionRequest) -> Result<NativePlaybackSnapshot> {
-        unavailable()
-    }
-    pub fn close(_: NativeSessionRequest) -> Result<()> {
-        Ok(())
-    }
-    pub fn owns_session(_: &str) -> bool {
-        false
-    }
-    pub fn force_close() -> Result<()> {
-        Ok(())
-    }
-}
-
+use unavailable_linux_backend as linux_mpv;
 #[cfg(all(target_os = "linux", not(feature = "gstreamer-runtime")))]
-mod linux_gstreamer {
+use unavailable_linux_backend as linux_gstreamer;
+
+#[cfg(all(
+    target_os = "linux",
+    any(not(feature = "mpv-runtime"), not(feature = "gstreamer-runtime"))
+))]
+mod unavailable_linux_backend {
     use tauri::{AppHandle, Runtime};
 
     use crate::{
@@ -2027,7 +2002,7 @@ mod linux_gstreamer {
 
     fn unavailable<T>() -> Result<T> {
         Err(Error::RuntimeUnavailable(
-            "Linux native playback requires the gstreamer-runtime feature".into(),
+            "the requested Linux playback backend was not compiled".into(),
         ))
     }
     pub fn open<R: Runtime>(

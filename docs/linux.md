@@ -8,7 +8,7 @@ Enable `mpv-runtime` and provide the system libmpv development package at build
 time:
 
 ```toml
-tauri-plugin-video = { version = "0.2", features = ["mpv-runtime"] }
+tauri-plugin-video = { version = "0.4", features = ["mpv-runtime"] }
 ```
 
 ```ts

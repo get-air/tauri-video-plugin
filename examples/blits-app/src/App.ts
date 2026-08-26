@@ -1,15 +1,14 @@
 import Blits from '@lightningjs/blits'
 import {
-  attachBlitsVideo,
-  blitsVideoHole,
-  type BlitsVideoController,
-  type BlitsVideoRect,
-} from '@get-air/video/blits'
+  attachCanvasVideo,
+  type CanvasVideoController,
+  type CanvasVideoRect,
+} from '@get-air/video/canvas'
 import { createTauriVideoClient } from '@get-air/video-tauri'
 
 const APP_WIDTH = 1920
 const APP_HEIGHT = 1080
-const VIDEO_RECT: BlitsVideoRect = {
+const VIDEO_RECT: CanvasVideoRect = {
   x: 426,
   y: 164,
   width: 1068,
@@ -20,10 +19,17 @@ const VIDEO_SOURCE = import.meta.env.VITE_VIDEO_SOURCE
 const videoClient = createTauriVideoClient({
   playback: { engine: 'gstreamer' },
 })
-const backgroundShader = JSON.stringify(blitsVideoHole(VIDEO_RECT, 26))
+const backgroundShader = JSON.stringify({
+  type: 'holePunch',
+  x: VIDEO_RECT.x,
+  y: VIDEO_RECT.y,
+  w: VIDEO_RECT.width,
+  h: VIDEO_RECT.height,
+  radius: 26,
+})
   .replaceAll('"', "'")
 
-let video: BlitsVideoController | undefined
+let video: CanvasVideoController | undefined
 let removeTimeListener: (() => void) | undefined
 let removeErrorListener: (() => void) | undefined
 
@@ -122,7 +128,7 @@ export default Blits.Application({
       const canvas = document.querySelector<HTMLCanvasElement>('#blits-canvas')
       if (!canvas) throw new Error('Missing #blits-canvas')
       try {
-        video = await attachBlitsVideo({
+        video = await attachCanvasVideo({
           client: videoClient,
           canvas,
           rect: VIDEO_RECT,

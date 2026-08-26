@@ -495,6 +495,21 @@ mod gstreamer {
             .unwrap_or_else(|| "unknown-decoder".into())
     }
 
+    fn playback_timeline(pipeline: &gst::Element, duration: f64) -> (bool, bool, f64, f64) {
+        let mut latency = gst::query::Latency::new();
+        let live = duration <= 0.0 || (pipeline.query(latency.query_mut()) && latency.result().0);
+        let mut seeking = gst::query::Seeking::new(gst::Format::Time);
+        if !pipeline.query(seeking.query_mut()) {
+            return (live, !live, 0.0, duration);
+        }
+        let (seekable, start, end) = seeking.result();
+        let seconds = |value: gst::GenericFormattedValue| match value {
+            gst::GenericFormattedValue::Time(Some(time)) => time.seconds_f64(),
+            _ => 0.0,
+        };
+        (live, seekable, seconds(start), seconds(end))
+    }
+
     pub fn control(payload: NativeControlRequest) -> Result<NativePlaybackSnapshot> {
         PLAYER.with(|slot| {
             let mut slot = slot.borrow_mut();
@@ -554,8 +569,6 @@ mod gstreamer {
             source.y = payload.y;
             source.width = payload.width;
             source.height = payload.height;
-            source.surface_aperture = payload.surface_aperture;
-            source.surface_overlays = payload.surface_overlays;
             Ok(())
         })
     }
@@ -623,6 +636,21 @@ mod gstreamer {
             .query_duration::<gst::ClockTime>()
             .map(|time| time.seconds_f64())
             .unwrap_or(0.0);
+        let (live, seekable, seekable_start, seekable_end) =
+            playback_timeline(&player.pipeline, duration);
+        let buffered = position
+            + player.buffer_duration_seconds.unwrap_or(0.0) * player.buffering_percent as f64
+                / 100.0;
+        let buffered = if live {
+            buffered.max(position)
+        } else {
+            buffered.min(duration.max(position))
+        };
+        let seekable_end = if seekable_end > seekable_start {
+            seekable_end
+        } else {
+            duration.max(buffered)
+        };
         let structure = player.video_sink.property::<gst::Structure>("stats");
         let rendered = player.presented_frames.load(Ordering::Relaxed);
         let dropped = structure.get::<u64>("dropped").unwrap_or(0);
@@ -649,10 +677,11 @@ mod gstreamer {
         Ok(NativePlaybackSnapshot {
             duration_seconds: duration,
             current_time_seconds: position,
-            buffered_seconds: (position
-                + player.buffer_duration_seconds.unwrap_or(0.0) * player.buffering_percent as f64
-                    / 100.0)
-                .min(duration.max(position)),
+            buffered_seconds: buffered,
+            live,
+            seekable,
+            seekable_start_seconds: seekable_start,
+            seekable_end_seconds: seekable_end,
             playing: player.desired_playing,
             video_width,
             video_height,
@@ -818,6 +847,10 @@ mod gstreamer {
         ))
     }
 
+    pub fn prepare_texture_stream<R: Runtime>(_: &AppHandle<R>, _: String) -> Result<()> {
+        unavailable()
+    }
+
     pub fn open<R: Runtime>(
         _: &AppHandle<R>,
         _: NativeOpenRequest,
@@ -826,13 +859,6 @@ mod gstreamer {
     }
 
     pub fn control(_: NativeControlRequest) -> Result<NativePlaybackSnapshot> {
-        unavailable()
-    }
-
-    pub fn frame_stream(
-        _: String,
-        _: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
-    ) -> Result<()> {
         unavailable()
     }
 
