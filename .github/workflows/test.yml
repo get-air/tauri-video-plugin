@@ -108,7 +108,7 @@ jobs:
         run: |
           command -v grep >/dev/null
           if grep --recursive --line-number --extended-regexp \
-            "mediabunny|@solidtv|react-dom|norigin-spatial" dist-js; then
+            "mediabunny|react-dom|norigin-spatial|framework\.js" dist-js; then
             echo "The native adapter bundle contains DOM package implementation code"
             exit 1
           fi
