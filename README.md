@@ -99,13 +99,10 @@ All `@get-air/video` integrations can use the installed Tauri backend:
 | Promise API | `createTauriVideoClient()` |
 | Effect | `layerTauriVideoBackend()` from `@get-air/video-tauri/effect` |
 | React / TV focus | `client` prop |
-| Canvas | `client` option |
-| Blits | `client` option |
 
 Keep importing shared helpers from `@get-air/video/*`; only the client or
-Effect layer comes from the Tauri adapter. Canvas and Blits also
-need the transparent aperture shown in the [examples](examples) on Linux and
-Android; Windows TextureStream remains ordinary DOM video.
+Effect layer comes from the Tauri adapter. The native surface follows an
+ordinary HTML video element inside Tauri's WebView.
 
 ## Compatibility
 

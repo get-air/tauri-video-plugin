@@ -2,7 +2,7 @@
 
 `@get-air/video-tauri` adds native Tauri playback to the platform-neutral
 [`@get-air/video`](https://github.com/get-air/video) API. The common package
-owns `VideoController`, backend fallback, subtitles, React/Blits
+owns `VideoController`, backend fallback, subtitles, and React
 integrations, and DOM backends. This package owns only the
 `tauri` adapter and its native settings.
 
@@ -173,7 +173,7 @@ Advanced integrations can use `tauriVideoBackend(defaults)` to obtain the raw
 `VideoBackendAdapter`, or `attachTauriBackend` to open a backend controller
 without the stable switching façade.
 
-## React and canvas integrations
+## React integration
 
 Framework integrations remain in `@get-air/video`; pass the client as a prop or
 option:
@@ -196,19 +196,7 @@ export function Player() {
 }
 ```
 
-```ts
-import { attachCanvasVideo } from '@get-air/video/canvas'
-
-const player = await attachCanvasVideo({
-  client,
-  canvas,
-  rect,
-  source: movieUrl,
-  backend: 'tauri',
-})
-```
-
-`VideoPlayer`, `TvVideoPlayer`, and `attachCanvasVideo` all accept the same client.
+`VideoPlayer` and `TvVideoPlayer` accept the same client.
 
 ## Effect layer
 

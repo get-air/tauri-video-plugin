@@ -4,7 +4,6 @@ import android.app.Activity
 import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Color
-import android.graphics.PixelFormat
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -129,14 +128,7 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
-    /**
-     * Create the native playback plane independently of Android WebView setup.
-     *
-     * Wry calls [load] with its WebView and keeps the existing scroll
-     * synchronizer. Blitz registers the plugin with a null WebView, so the
-     * first open lazily creates the same Media3/VLC plane beneath the native
-     * renderer surface.
-     */
+    /** Create the native playback plane beneath Tauri's Android WebView. */
     private fun ensureNativeSurfaceHost() {
         if (nativeRoot != null && nativeView != null && vlcView != null) return
         val nativeContainer = FrameLayout(activity).apply {
@@ -160,15 +152,6 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         nativeContainer.addView(playerView, match)
         nativeContainer.addView(vlcLayout, match)
         val root = activity.findViewById<ViewGroup>(android.R.id.content)
-        // GameActivity and PlayerView both render through SurfaceView. Android
-        // otherwise promotes the video surface above the Blitz canvas and its
-        // controls regardless of normal View z-order. Keep the transparent
-        // Blitz surface in the media-overlay layer and the decoded video in the
-        // base media layer so UI alpha composes over zero-copy playback.
-        rendererSurfaces(root).forEach {
-            if (hostWebView == null) it.holder.setFormat(PixelFormat.RGBA_8888)
-            it.setZOrderMediaOverlay(true)
-        }
         root.addView(nativeContainer, 0, FrameLayout.LayoutParams(1, 1))
         rendererSurfaces(nativeContainer).forEach {
             it.setZOrderOnTop(false)
@@ -194,6 +177,10 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
         val args = invoke.parseArgs(NativeOpenArgs::class.java)
         activity.runOnUiThread {
             closeNativePlayer()
+            if (hostWebView == null) {
+                invoke.reject("native video requires an initialized Tauri WebView")
+                return@runOnUiThread
+            }
             ensureNativeSurfaceHost()
             activeSessionKey = args.sessionKey
             val generation = openGeneration
@@ -794,9 +781,9 @@ class VideoPlugin(private val activity: Activity) : Plugin(activity) {
     private fun syncNativeScrollPosition() {
         if (!nativeLayoutActive) return
         val view = nativeRoot ?: return
-        val webView = hostWebView
-        val nextX = (nativeDocumentX - (webView?.scrollX ?: 0)).toFloat()
-        val nextY = (nativeDocumentY - (webView?.scrollY ?: 0)).toFloat()
+        val webView = hostWebView ?: return
+        val nextX = (nativeDocumentX - webView.scrollX).toFloat()
+        val nextY = (nativeDocumentY - webView.scrollY).toFloat()
         if (view.translationX != nextX) view.translationX = nextX
         if (view.translationY != nextY) view.translationY = nextY
     }

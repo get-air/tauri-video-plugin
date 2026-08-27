@@ -78,7 +78,6 @@ async function attach(
   document.body.append(element)
   const controller = await attachTauriBackend(element, {
     suspendWhenHidden: false,
-    surfaceMode: 'transparent-canvas',
     ...options,
   })
   controllers.add(controller)
@@ -265,7 +264,6 @@ describe('native controller contract', () => {
     const controller = await attachTauriBackend(element, {
       source: 'movie.mkv',
       suspendWhenHidden: false,
-      surfaceMode: 'transparent-canvas',
       controlRegions: [controls],
     })
     controllers.add(controller)
@@ -371,7 +369,6 @@ describe('native controller contract', () => {
     const controller = await attachTauriBackend(element, {
       source: 'https://example.test/live.m3u8',
       suspendWhenHidden: false,
-      surfaceMode: 'transparent-canvas',
     })
     controllers.add(controller)
 

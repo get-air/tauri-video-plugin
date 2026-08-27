@@ -16,7 +16,6 @@ const manifest = JSON.parse(
 const config: RollupOptions = {
   input: {
     index: 'adapter/index.ts',
-    native: 'adapter/native.ts',
     effect: 'adapter/effect.ts',
   },
   output: {

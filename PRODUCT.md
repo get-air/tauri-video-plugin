@@ -25,8 +25,8 @@ The plugin keeps decoding and presentation on the platform-native accelerated pa
 
 Developers install the Rust plugin and `@get-air/video-tauri` alongside
 `@get-air/video`, register the Tauri adapter, and attach playback to a positioned
-video element through the shared API. React, Solid, and Blits integrations come
-from `@get-air/video`; this repository's examples demonstrate the native adapter
+video element through the shared API. React integrations come from
+`@get-air/video`; this repository's example demonstrates the native adapter
 and platform qualification.
 
 ## Capabilities and Constraints

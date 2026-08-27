@@ -755,7 +755,7 @@ class NativeSurfaceVideoController extends EventTarget implements BackendVideoCo
   }
 
   #claimCssSurface(): void {
-    if (this.#platform === 'windows' || this.#options.surfaceMode === 'transparent-canvas') return
+    if (this.#platform === 'windows') return
     this.#compositor = new NativeSurfaceCompositor(this.#sessionKey, this.element)
   }
 

@@ -5,6 +5,10 @@ Release numbering follows the
 
 ## Unreleased
 
+- Return the adapter to a WebView-only contract: remove the Blitz/native-only
+  entrypoint, canvas/Blits example, and transparent-canvas bypass. Android
+  native playback now requires Tauri to initialize the plugin with a WebView.
+
 - Replace the Windows external video surface with WebView2 TextureStream,
   presenting pooled GStreamer D3D11 textures on the real HTML video element so
   controls, scrolling, live resize, fullscreen, and Snap Layouts are one

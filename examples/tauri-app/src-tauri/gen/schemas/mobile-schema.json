@@ -2193,22 +2193,10 @@
           "markdownDescription": "Denies the unminimize command without any pre-configured scope."
         },
         {
-          "description": "Create and control bounded video sessions, inspect tracks, seek, and read sanitized playback statistics\n#### This default permission set includes:\n\n- `allow-runtime-capabilities`\n- `allow-create-session`\n- `allow-set-playback-state`\n- `allow-seek`\n- `allow-select-track`\n- `allow-update-visibility`\n- `allow-session-stats`\n- `allow-destroy-session`\n- `allow-native-open`\n- `allow-native-control`\n- `allow-native-layout`\n- `allow-native-stats`\n- `allow-native-close`",
+          "description": "Verify, open, and control the native video player, update its layout, and read playback statistics\n#### This default permission set includes:\n\n- `allow-native-diagnostics`\n- `allow-native-open`\n- `allow-native-prepare-texture-stream`\n- `allow-native-control`\n- `allow-native-layout`\n- `allow-native-stats`\n- `allow-native-close`",
           "type": "string",
           "const": "video:default",
-          "markdownDescription": "Create and control bounded video sessions, inspect tracks, seek, and read sanitized playback statistics\n#### This default permission set includes:\n\n- `allow-runtime-capabilities`\n- `allow-create-session`\n- `allow-set-playback-state`\n- `allow-seek`\n- `allow-select-track`\n- `allow-update-visibility`\n- `allow-session-stats`\n- `allow-destroy-session`\n- `allow-native-open`\n- `allow-native-control`\n- `allow-native-layout`\n- `allow-native-stats`\n- `allow-native-close`"
-        },
-        {
-          "description": "Enables the create_session command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:allow-create-session",
-          "markdownDescription": "Enables the create_session command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the destroy_session command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:allow-destroy-session",
-          "markdownDescription": "Enables the destroy_session command without any pre-configured scope."
+          "markdownDescription": "Verify, open, and control the native video player, update its layout, and read playback statistics\n#### This default permission set includes:\n\n- `allow-native-diagnostics`\n- `allow-native-open`\n- `allow-native-prepare-texture-stream`\n- `allow-native-control`\n- `allow-native-layout`\n- `allow-native-stats`\n- `allow-native-close`"
         },
         {
           "description": "Enables the native_close command without any pre-configured scope.",
@@ -2223,6 +2211,12 @@
           "markdownDescription": "Enables the native_control command without any pre-configured scope."
         },
         {
+          "description": "Enables the native_diagnostics command without any pre-configured scope.",
+          "type": "string",
+          "const": "video:allow-native-diagnostics",
+          "markdownDescription": "Enables the native_diagnostics command without any pre-configured scope."
+        },
+        {
           "description": "Enables the native_layout command without any pre-configured scope.",
           "type": "string",
           "const": "video:allow-native-layout",
@@ -2235,58 +2229,16 @@
           "markdownDescription": "Enables the native_open command without any pre-configured scope."
         },
         {
+          "description": "Enables the native_prepare_texture_stream command without any pre-configured scope.",
+          "type": "string",
+          "const": "video:allow-native-prepare-texture-stream",
+          "markdownDescription": "Enables the native_prepare_texture_stream command without any pre-configured scope."
+        },
+        {
           "description": "Enables the native_stats command without any pre-configured scope.",
           "type": "string",
           "const": "video:allow-native-stats",
           "markdownDescription": "Enables the native_stats command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the runtime_capabilities command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:allow-runtime-capabilities",
-          "markdownDescription": "Enables the runtime_capabilities command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the seek command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:allow-seek",
-          "markdownDescription": "Enables the seek command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the select_track command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:allow-select-track",
-          "markdownDescription": "Enables the select_track command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the session_stats command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:allow-session-stats",
-          "markdownDescription": "Enables the session_stats command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the set_playback_state command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:allow-set-playback-state",
-          "markdownDescription": "Enables the set_playback_state command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the update_visibility command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:allow-update-visibility",
-          "markdownDescription": "Enables the update_visibility command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the create_session command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:deny-create-session",
-          "markdownDescription": "Denies the create_session command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the destroy_session command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:deny-destroy-session",
-          "markdownDescription": "Denies the destroy_session command without any pre-configured scope."
         },
         {
           "description": "Denies the native_close command without any pre-configured scope.",
@@ -2301,6 +2253,12 @@
           "markdownDescription": "Denies the native_control command without any pre-configured scope."
         },
         {
+          "description": "Denies the native_diagnostics command without any pre-configured scope.",
+          "type": "string",
+          "const": "video:deny-native-diagnostics",
+          "markdownDescription": "Denies the native_diagnostics command without any pre-configured scope."
+        },
+        {
           "description": "Denies the native_layout command without any pre-configured scope.",
           "type": "string",
           "const": "video:deny-native-layout",
@@ -2313,46 +2271,16 @@
           "markdownDescription": "Denies the native_open command without any pre-configured scope."
         },
         {
+          "description": "Denies the native_prepare_texture_stream command without any pre-configured scope.",
+          "type": "string",
+          "const": "video:deny-native-prepare-texture-stream",
+          "markdownDescription": "Denies the native_prepare_texture_stream command without any pre-configured scope."
+        },
+        {
           "description": "Denies the native_stats command without any pre-configured scope.",
           "type": "string",
           "const": "video:deny-native-stats",
           "markdownDescription": "Denies the native_stats command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the runtime_capabilities command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:deny-runtime-capabilities",
-          "markdownDescription": "Denies the runtime_capabilities command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the seek command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:deny-seek",
-          "markdownDescription": "Denies the seek command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the select_track command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:deny-select-track",
-          "markdownDescription": "Denies the select_track command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the session_stats command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:deny-session-stats",
-          "markdownDescription": "Denies the session_stats command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the set_playback_state command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:deny-set-playback-state",
-          "markdownDescription": "Denies the set_playback_state command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the update_visibility command without any pre-configured scope.",
-          "type": "string",
-          "const": "video:deny-update-visibility",
-          "markdownDescription": "Denies the update_visibility command without any pre-configured scope."
         }
       ]
     },
