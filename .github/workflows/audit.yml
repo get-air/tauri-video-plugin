@@ -54,4 +54,3 @@ jobs:
         run: |
           cargo audit
           cargo audit --file examples/tauri-app/src-tauri/Cargo.lock
-          cargo audit --file examples/blits-app/src-tauri/Cargo.lock
